@@ -1,0 +1,5 @@
+{
+  "_commentaire": "Alias de titres : clé = titre AlloCiné/Pathé (français), valeur = titre Jellyfin. Ajoutez une ligne par film/série dont le titre diffère entre les deux. Ce fichier est relu à chaque requête, pas besoin de redémarrer le conteneur.",
+  "Dune : Deuxième Partie": "Dune: Part Two",
+  "Vice-Versa 2": "Inside Out 2"
+}

@@ -1,0 +1,20 @@
+services:
+  allocine-pathe-api:
+    build: .
+    container_name: allocine-pathe-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG_SAVE_HTML=true
+      - DEBUG_DATA_DIR=/app/data
+      # - PATHE_CINEMA_SLUG=pathe-toulouse-wilson  # à ajuster si besoin
+      # --- Jellyfin (obligatoire pour la sync notes + le calendrier filtré) ---
+      - JELLYFIN_URL=${JELLYFIN_URL:-}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      # - JELLYFIN_USER_ID=                       # optionnel, seulement si nécessaire
+      - TITLE_ALIASES_PATH=/app/data/title_aliases.json
+      - TITLE_MATCH_THRESHOLD=0.85
+      - CALENDAR_NAME=Pathé Toulouse Wilson (ma bibliothèque Jellyfin)
+    volumes:
+      - ./data:/app/data   # HTML de debug accessible depuis l'hôte
+    restart: unless-stopped
