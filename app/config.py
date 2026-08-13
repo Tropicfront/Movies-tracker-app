@@ -6,7 +6,7 @@ import os
 
 # --- Pathé Toulouse Wilson ---
 # Slug de la page cinéma sur pathe.fr. À vérifier/ajuster si le site change.
-PATHE_CINEMA_SLUG = os.getenv("PATHE_CINEMA_SLUG", "pathe-toulouse-wilson")
+PATHE_CINEMA_SLUG = os.getenv("PATHE_CINEMA_SLUG", "cinema-pathe-wilson")
 PATHE_BASE_URL = "https://www.pathe.fr"
 PATHE_CINEMA_URL = f"{PATHE_BASE_URL}/cinemas/{PATHE_CINEMA_SLUG}"
 
