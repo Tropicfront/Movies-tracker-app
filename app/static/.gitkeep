@@ -1,0 +1,3 @@
+# Ce dossier sert à servir des fichiers statiques (favicon, images, etc.) si besoin.
+# Il est monté par FastAPI sur /static (voir app/main.py).
+# Le fichier .gitkeep existe uniquement pour que le dossier soit versionné même vide.

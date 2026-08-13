@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
+# Dossier static (favicon, assets éventuels) — créé explicitement au cas où
+# il serait vide et donc absent du contexte de build.
+RUN mkdir -p /app/app/static
+
 # Dossier pour les HTML de debug (sélecteurs à ajuster si besoin)
 RUN mkdir -p /app/data
 

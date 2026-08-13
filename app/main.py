@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 from app.models import Film, NoteAlloCine, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_scraper import get_note_allocine
@@ -38,6 +39,10 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+
+# Fichiers statiques éventuels (favicon, images...). Le dossier existe toujours
+# (même vide, via .gitkeep) pour éviter une erreur au montage.
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 @app.on_event("startup")

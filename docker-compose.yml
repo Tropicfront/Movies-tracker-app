@@ -17,4 +17,7 @@ services:
       - CALENDAR_NAME=Pathé Toulouse Wilson (ma bibliothèque Jellyfin)
     volumes:
       - ./data:/app/data   # HTML de debug accessible depuis l'hôte
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     restart: unless-stopped

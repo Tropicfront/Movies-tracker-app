@@ -124,8 +124,28 @@ modification.
 
 ## Déboguer le scraping
 
-Si `/films` renvoie une liste vide ou incomplète, le site ciblé a probablement changé de structure
-(ou nécessite un rendu JavaScript que `requests` seul ne fait pas).
+Si `/films` renvoie une liste vide ou incomplète, vérifiez d'abord dans les logs du conteneur
+(`docker compose logs -f`) s'il s'agit d'une erreur réseau (DNS, timeout) ou d'un problème de
+sélecteurs (voir plus bas).
+
+### Erreur `Temporary failure in name resolution` / `NameResolutionError`
+
+Cette erreur signifie que le **conteneur n'arrive pas à résoudre les noms de domaine** (DNS), pas
+un problème de code. C'est un souci assez courant selon les configurations Docker. Une config DNS
+explicite est déjà incluse dans `docker-compose.yml` (`dns: 1.1.1.1, 8.8.8.8`). Si ça persiste :
+
+1. Vérifiez que votre machine hôte a bien accès à internet et à un DNS fonctionnel.
+2. Redémarrez le démon Docker (`sudo systemctl restart docker` sous Linux, ou redémarrez Docker
+   Desktop).
+3. Si vous êtes derrière un VPN ou un pare-feu d'entreprise, celui-ci bloque parfois le DNS des
+   conteneurs — essayez de le désactiver temporairement pour confirmer.
+4. En dernier recours, testez en ligne de commande depuis l'intérieur du conteneur :
+   ```bash
+   docker compose exec allocine-pathe-api getent hosts www.pathe.fr
+   ```
+   Si ça échoue aussi, le problème est confirmé au niveau réseau Docker/hôte, pas dans ce projet.
+
+### Sélecteurs obsolètes (structure du site changée)
 
 1. Le HTML brut récupéré est automatiquement sauvegardé dans le dossier `./data` (monté depuis le
    conteneur) grâce à `DEBUG_SAVE_HTML=true` (activé par défaut).
