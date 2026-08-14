@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 
 from app.config import (
     PATHE_CINEMA_URL,
+    PATHE_BASE_URL,
     DEFAULT_HEADERS,
     REQUEST_TIMEOUT,
     DEBUG_SAVE_HTML,
@@ -33,6 +34,11 @@ from app.config import (
 from app.models import Film, Seance
 
 logger = logging.getLogger("pathe_scraper")
+
+# Session réutilisée pour conserver les cookies entre la page d'accueil
+# (warm-up) et la page cible, comme le ferait un vrai navigateur.
+_session = requests.Session()
+_session.headers.update(DEFAULT_HEADERS)
 
 
 def _save_debug_html(html: str, name: str) -> None:
@@ -48,8 +54,36 @@ def _save_debug_html(html: str, name: str) -> None:
         logger.warning("Impossible de sauvegarder le HTML de debug: %s", e)
 
 
-def _fetch_html(url: str) -> str:
-    resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
+def _warm_up() -> None:
+    """
+    Visite la page d'accueil pathe.fr avant la page cible, pour obtenir des
+    cookies de session comme le ferait un vrai navigateur. Certaines
+    protections anti-bot basiques (pas les challenges JS type Cloudflare)
+    bloquent les requêtes "à froid" sans cookies ni referer.
+    """
+    try:
+        resp = _session.get(PATHE_BASE_URL, timeout=REQUEST_TIMEOUT)
+        logger.info("Warm-up sur %s: statut %s, %d cookie(s) obtenu(s)",
+                     PATHE_BASE_URL, resp.status_code, len(_session.cookies))
+    except requests.RequestException as e:
+        logger.warning("Échec du warm-up sur %s (on continue quand même): %s", PATHE_BASE_URL, e)
+
+
+def _fetch_html(url: str, referer: str | None = None) -> str:
+    headers = {"Referer": referer} if referer else {}
+    resp = _session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if not resp.ok:
+        # On sauvegarde quand même le corps de la réponse d'erreur : utile pour
+        # distinguer un simple refus (403 minimal) d'une page de challenge
+        # Cloudflare/Akamai (souvent bien plus longue, avec du JS spécifique).
+        _save_debug_html(
+            resp.text, f"erreur_{resp.status_code}_{url.rsplit('/', 1)[-1] or 'page'}"
+        )
+        logger.warning(
+            "Réponse HTTP %s pour %s (taille du corps: %d octets) — voir le HTML de "
+            "debug pour identifier s'il s'agit d'une page de challenge anti-bot.",
+            resp.status_code, url, len(resp.text),
+        )
     resp.raise_for_status()
     return resp.text
 
@@ -169,7 +203,8 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     Wilson, avec leurs séances si disponibles.
     """
     logger.info("Récupération de la page Pathé Toulouse Wilson: %s", PATHE_CINEMA_URL)
-    html = _fetch_html(PATHE_CINEMA_URL)
+    _warm_up()
+    html = _fetch_html(PATHE_CINEMA_URL, referer=PATHE_BASE_URL)
     _save_debug_html(html, "pathe_toulouse_wilson")
 
     soup = BeautifulSoup(html, "lxml")
