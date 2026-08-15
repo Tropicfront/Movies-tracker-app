@@ -92,7 +92,10 @@ def _fetch_html_playwright(url: str) -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",  # requis : Chromium tourne en root dans le conteneur
+            ],
         )
         try:
             context = browser.new_context(

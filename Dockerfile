@@ -1,8 +1,13 @@
-FROM python:3.12-slim
+# Image officielle Playwright : Python + Chromium + toutes les dépendances
+# système déjà installées et testées par Microsoft pour cette combinaison
+# exacte. Évite les échecs de `playwright install --with-deps` qui peuvent
+# survenir sur une image générique selon la version de Debian/Ubuntu sous-jacente.
+# Le tag de version doit correspondre à celui de requirements.txt (playwright==1.47.0).
+FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy
 
 WORKDIR /app
 
-# Dépendances système minimales pour lxml
+# Dépendances système minimales pour lxml (l'image de base est Ubuntu, apt disponible)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
     libxslt1-dev \
@@ -11,12 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Chromium + dépendances système pour Playwright (nécessaire pour contourner
-# la protection Akamai Bot Manager sur pathe.fr, qui exige une exécution JS
-# réelle). --with-deps installe automatiquement les paquets apt requis
-# (libnss3, libatk, etc.) : plus fiable que de les lister manuellement.
-RUN playwright install --with-deps chromium
 
 COPY app ./app
 
