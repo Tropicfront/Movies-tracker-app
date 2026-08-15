@@ -12,6 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Chromium + dépendances système pour Playwright (nécessaire pour contourner
+# la protection Akamai Bot Manager sur pathe.fr, qui exige une exécution JS
+# réelle). --with-deps installe automatiquement les paquets apt requis
+# (libnss3, libatk, etc.) : plus fiable que de les lister manuellement.
+RUN playwright install --with-deps chromium
+
 COPY app ./app
 
 # Dossier static (favicon, assets éventuels) — créé explicitement au cas où

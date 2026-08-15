@@ -1,17 +1,29 @@
 """
 Scraper pour la page du cinéma Pathé Toulouse Wilson.
 
-Stratégie à deux niveaux :
+Récupération de la page (3 niveaux, du plus léger au plus robuste) :
+1. Playwright (navigateur headless Chromium) — méthode principale. pathe.fr
+   est protégé par Akamai Bot Manager, qui exige l'exécution réelle de
+   JavaScript (télémétrie de session via Boomerang/mPulse) avant de laisser
+   passer une requête : aucun client HTTP, même avec une empreinte TLS
+   parfaitement imitée, ne peut satisfaire cette exigence. Un vrai navigateur
+   headless est donc nécessaire ici (vérifié empiriquement : curl_cffi seul
+   ne suffit pas contre cette protection).
+2. curl_cffi (empreinte TLS de Chrome) — repli si Playwright/Chromium n'est
+   pas disponible sur la plateforme (ex. installation échouée).
+3. requests classique — dernier repli si curl_cffi n'est pas non plus
+   disponible.
+
+Extraction des données (une fois le HTML obtenu, quelle que soit la méthode) :
 1. Les sites Pathé sont généralement construits en Next.js/React et embarquent
-   souvent leurs données dans un <script id="__NEXT_DATA__"> ou un <script>
-   contenant un objet JSON (window.__INITIAL_STATE__, etc.). On tente d'abord
-   d'extraire ces données structurées, plus fiables qu'un parsing HTML.
+   souvent leurs données dans un <script id="__NEXT_DATA__">. On tente
+   d'abord d'extraire ces données structurées, plus fiables qu'un parsing HTML.
 2. En repli, on parse le HTML rendu à la recherche de "cartes films" classiques
    (titre, image, horaires).
 
-Si la structure du site a changé et qu'aucune des deux stratégies ne fonctionne,
-activez DEBUG_SAVE_HTML=true pour inspecter le HTML brut sauvegardé dans /app/data
-et ajuster les sélecteurs ci-dessous en conséquence.
+Si la structure du site a changé et qu'aucune des deux stratégies d'extraction
+ne fonctionne, activez DEBUG_SAVE_HTML=true pour inspecter le HTML brut
+sauvegardé dans /app/data et ajuster les sélecteurs ci-dessous en conséquence.
 """
 import json
 import logging
@@ -35,13 +47,14 @@ from app.models import Film, Seance
 
 logger = logging.getLogger("pathe_scraper")
 
-# pathe.fr est protégé par Akamai, qui détecte notamment les bots via
-# l'empreinte TLS (JA3) de la connexion — un signal que la librairie
-# `requests` standard ne peut pas imiter (elle utilise le TLS natif de
-# Python, facilement reconnaissable). curl_cffi imite l'empreinte TLS d'un
-# vrai navigateur Chrome, ce qui suffit souvent à passer ce type de
-# protection. Si curl_cffi n'est pas disponible (échec d'installation sur
-# une plateforme non supportée), on retombe sur `requests` classique.
+try:
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+    _HAS_PLAYWRIGHT = True
+except ImportError:
+    sync_playwright = None
+    PlaywrightTimeoutError = Exception
+    _HAS_PLAYWRIGHT = False
+
 try:
     from curl_cffi import requests as cf_requests
     _HAS_CURL_CFFI = True
@@ -50,17 +63,13 @@ except ImportError:
     _HAS_CURL_CFFI = False
 
 _IMPERSONATE_PROFILE = "chrome124"
+_PLAYWRIGHT_TIMEOUT_MS = REQUEST_TIMEOUT * 1000 * 2  # le rendu JS est plus lent qu'une requête HTTP
 
-# Session réutilisée pour conserver les cookies entre la page d'accueil
-# (warm-up) et la page cible, comme le ferait un vrai navigateur.
+# Session HTTP de repli (curl_cffi si possible, sinon requests), utilisée
+# uniquement si Playwright n'est pas disponible.
 if _HAS_CURL_CFFI:
-    logger.info("curl_cffi disponible : les requêtes Pathé imiteront l'empreinte TLS de Chrome")
     _session = cf_requests.Session(impersonate=_IMPERSONATE_PROFILE)
 else:
-    logger.warning(
-        "curl_cffi non disponible : repli sur `requests` standard, plus susceptible "
-        "d'être bloqué par la protection Akamai de pathe.fr."
-    )
     _session = requests.Session()
 _session.headers.update(DEFAULT_HEADERS)
 
@@ -78,40 +87,72 @@ def _save_debug_html(html: str, name: str) -> None:
         logger.warning("Impossible de sauvegarder le HTML de debug: %s", e)
 
 
-def _warm_up() -> None:
-    """
-    Visite la page d'accueil pathe.fr avant la page cible, pour obtenir des
-    cookies de session comme le ferait un vrai navigateur. Certaines
-    protections anti-bot basiques (pas les challenges JS type Cloudflare)
-    bloquent les requêtes "à froid" sans cookies ni referer.
-    """
-    try:
-        resp = _session.get(PATHE_BASE_URL, timeout=REQUEST_TIMEOUT)
-        logger.info("Warm-up sur %s: statut %s, %d cookie(s) obtenu(s)",
-                     PATHE_BASE_URL, resp.status_code, len(_session.cookies))
-    except Exception as e:
-        # Exception générique volontaire : curl_cffi lève ses propres classes
-        # d'erreur, pas toujours des sous-classes de requests.RequestException.
-        logger.warning("Échec du warm-up sur %s (on continue quand même): %s", PATHE_BASE_URL, e)
+def _fetch_html_playwright(url: str) -> str:
+    """Charge la page dans un vrai Chromium headless (exécute le JS Akamai)."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        try:
+            context = browser.new_context(
+                user_agent=DEFAULT_HEADERS["User-Agent"],
+                locale="fr-FR",
+                viewport={"width": 1920, "height": 1080},
+            )
+            page = context.new_page()
+            page.goto(url, wait_until="networkidle", timeout=_PLAYWRIGHT_TIMEOUT_MS)
+            # Laisse le temps au JS Akamai / à d'éventuels appels API internes
+            # de charger les films après le rendu initial de la page.
+            page.wait_for_timeout(2000)
+            html = page.content()
+            return html
+        finally:
+            browser.close()
 
 
-def _fetch_html(url: str, referer: str | None = None) -> str:
+def _fetch_html_http(url: str, referer: str | None = None) -> str:
+    """Repli sans navigateur (curl_cffi ou requests)."""
     headers = {"Referer": referer} if referer else {}
     resp = _session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     if not resp.ok:
-        # On sauvegarde quand même le corps de la réponse d'erreur : utile pour
-        # distinguer un simple refus (403 minimal) d'une page de challenge
-        # Cloudflare/Akamai (souvent bien plus longue, avec du JS spécifique).
         _save_debug_html(
             resp.text, f"erreur_{resp.status_code}_{url.rsplit('/', 1)[-1] or 'page'}"
         )
         logger.warning(
-            "Réponse HTTP %s pour %s (taille du corps: %d octets) — voir le HTML de "
-            "debug pour identifier s'il s'agit d'une page de challenge anti-bot.",
+            "Réponse HTTP %s pour %s (taille du corps: %d octets)",
             resp.status_code, url, len(resp.text),
         )
     resp.raise_for_status()
     return resp.text
+
+
+def _fetch_html(url: str, referer: str | None = None) -> str:
+    """
+    Récupère le HTML d'une page Pathé. Utilise Playwright en priorité
+    (nécessaire pour passer la protection Akamai Bot Manager), avec repli
+    automatique sur une requête HTTP classique si Playwright échoue ou n'est
+    pas disponible.
+    """
+    if _HAS_PLAYWRIGHT:
+        try:
+            logger.info("Récupération de %s via Playwright (Chromium headless)", url)
+            return _fetch_html_playwright(url)
+        except PlaywrightTimeoutError as e:
+            logger.warning(
+                "Timeout Playwright sur %s (%s) — repli sur une requête HTTP classique", url, e
+            )
+        except Exception as e:
+            logger.warning(
+                "Échec Playwright sur %s (%s) — repli sur une requête HTTP classique", url, e
+            )
+    else:
+        logger.warning(
+            "Playwright non disponible : utilisation d'une requête HTTP classique "
+            "(risque élevé de blocage par la protection Akamai de pathe.fr)."
+        )
+
+    return _fetch_html_http(url, referer=referer)
 
 
 def _try_extract_next_data(soup: BeautifulSoup) -> dict | None:
@@ -229,7 +270,6 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     Wilson, avec leurs séances si disponibles.
     """
     logger.info("Récupération de la page Pathé Toulouse Wilson: %s", PATHE_CINEMA_URL)
-    _warm_up()
     html = _fetch_html(PATHE_CINEMA_URL, referer=PATHE_BASE_URL)
     _save_debug_html(html, "pathe_toulouse_wilson")
 
