@@ -35,9 +35,33 @@ from app.models import Film, Seance
 
 logger = logging.getLogger("pathe_scraper")
 
+# pathe.fr est protégé par Akamai, qui détecte notamment les bots via
+# l'empreinte TLS (JA3) de la connexion — un signal que la librairie
+# `requests` standard ne peut pas imiter (elle utilise le TLS natif de
+# Python, facilement reconnaissable). curl_cffi imite l'empreinte TLS d'un
+# vrai navigateur Chrome, ce qui suffit souvent à passer ce type de
+# protection. Si curl_cffi n'est pas disponible (échec d'installation sur
+# une plateforme non supportée), on retombe sur `requests` classique.
+try:
+    from curl_cffi import requests as cf_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    cf_requests = None
+    _HAS_CURL_CFFI = False
+
+_IMPERSONATE_PROFILE = "chrome124"
+
 # Session réutilisée pour conserver les cookies entre la page d'accueil
 # (warm-up) et la page cible, comme le ferait un vrai navigateur.
-_session = requests.Session()
+if _HAS_CURL_CFFI:
+    logger.info("curl_cffi disponible : les requêtes Pathé imiteront l'empreinte TLS de Chrome")
+    _session = cf_requests.Session(impersonate=_IMPERSONATE_PROFILE)
+else:
+    logger.warning(
+        "curl_cffi non disponible : repli sur `requests` standard, plus susceptible "
+        "d'être bloqué par la protection Akamai de pathe.fr."
+    )
+    _session = requests.Session()
 _session.headers.update(DEFAULT_HEADERS)
 
 
@@ -65,7 +89,9 @@ def _warm_up() -> None:
         resp = _session.get(PATHE_BASE_URL, timeout=REQUEST_TIMEOUT)
         logger.info("Warm-up sur %s: statut %s, %d cookie(s) obtenu(s)",
                      PATHE_BASE_URL, resp.status_code, len(_session.cookies))
-    except requests.RequestException as e:
+    except Exception as e:
+        # Exception générique volontaire : curl_cffi lève ses propres classes
+        # d'erreur, pas toujours des sous-classes de requests.RequestException.
         logger.warning("Échec du warm-up sur %s (on continue quand même): %s", PATHE_BASE_URL, e)
 
 

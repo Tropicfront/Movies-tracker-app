@@ -157,19 +157,32 @@ explicite est déjà incluse dans `docker-compose.yml` (`dns: 1.1.1.1, 8.8.8.8`)
    - `app/scrapers/allocine_scraper.py` (fonction `_extract_notes` et `_find_fiche_url`)
 4. Reconstruisez l'image : `docker compose up --build`
 
-### Si le site Pathé nécessite du JavaScript
+### Si le site Pathé bloque les requêtes (403 Forbidden / Akamai)
 
-Si le HTML sauvegardé ne contient presque aucune donnée (page quasi vide, contenu chargé
-dynamiquement en JS), il faudra remplacer `requests` par un navigateur headless comme **Playwright** :
+pathe.fr est protégé par **Akamai** (CDN + anti-bot). Trois niveaux de contournement, du plus léger
+au plus lourd, déjà implémentés ou documentés dans ce projet :
 
-```bash
-pip install playwright
-playwright install chromium
-```
+1. **En-têtes HTTP réalistes + cookies de session** (déjà en place) : imite un vrai navigateur au
+   niveau applicatif (User-Agent, Accept, Sec-Fetch-*, visite préalable de la page d'accueil pour
+   obtenir des cookies). Suffisant contre un filtrage basique.
+2. **`curl_cffi` avec impersonation TLS** (déjà en place, activé automatiquement si le paquet est
+   installé) : Akamai/Cloudflare détectent aussi les bots via l'**empreinte TLS (JA3)** de la
+   connexion, un signal invisible au niveau des en-têtes et que la librairie `requests` standard ne
+   peut pas imiter. `curl_cffi` reproduit l'empreinte TLS d'un vrai Chrome. C'est souvent suffisant
+   contre une protection Akamai standard (pas en mode "Under Attack"/challenge JS interactif).
+3. **Navigateur headless (Playwright)** : si malgré `curl_cffi` vous obtenez toujours un blocage
+   (notamment une page avec du JavaScript de challenge, type "Vérification de votre navigateur..."),
+   c'est qu'Akamai exige l'exécution réelle de JavaScript pour valider le client. Il faut alors
+   remplacer la récupération HTTP par un vrai navigateur headless. Dites-le moi, je peux faire cet
+   ajustement (ajout de `playwright` + Chromium au `Dockerfile`, ce qui alourdit sensiblement
+   l'image et le temps de build).
 
-et adapter `_fetch_html()` dans `pathe_scraper.py` pour utiliser Playwright au lieu de `requests`.
-Je peux faire cet ajustement pour vous si vous confirmez que c'est nécessaire après inspection du
-HTML de debug.
+Pour savoir où vous en êtes après un nouveau build, regardez le fichier `./data/erreur_403_*.html`
+généré automatiquement en cas d'échec :
+- Une page courte type "Access Denied" ou une page d'erreur Akamai statique (comme celle observée,
+  `class="page-error maintenance"`) → niveaux 1-2 (déjà en place) peuvent suffire, sinon niveau 3.
+- Une page avec un script de challenge interactif, mention "Checking your browser" ou un compte à
+  rebours → niveau 3 (Playwright) nécessaire.
 
 ## Configuration (variables d'environnement)
 
