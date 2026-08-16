@@ -14,7 +14,7 @@ from threading import Lock
 from typing import List, Optional
 
 from app.models import Film, StatutScraping, StatutSyncJellyfin
-from app.scrapers.allocine_theater_scraper import scrape_allocine_theater
+from app.scrapers.pathe_scraper import scrape_pathe_toulouse_wilson
 from app.scrapers.allocine_scraper import get_note_allocine
 from app import jellyfin_client
 
