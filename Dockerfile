@@ -1,17 +1,16 @@
-# Image officielle Playwright : Python + Chromium + toutes les dépendances
-# système déjà installées et testées par Microsoft pour cette combinaison
-# exacte. Évite les échecs de `playwright install --with-deps` qui peuvent
-# survenir sur une image générique selon la version de Debian/Ubuntu sous-jacente.
-# Le tag de version doit correspondre à celui de requirements.txt (playwright==1.47.0).
-FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Dépendances système minimales pour lxml (l'image de base est Ubuntu, apt disponible)
+# Dépendances système : lxml (libxml2/libxslt + gcc) et curl (utilisé
+# directement en subprocess par le scraper Pathé — voir app/scrapers/
+# pathe_scraper.py pour l'explication : `curl` passe la protection Akamai
+# de pathe.fr là où les librairies HTTP Python sont bloquées).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
     libxslt1-dev \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

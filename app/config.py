@@ -5,7 +5,12 @@ Modifiez ici les URLs si les sites changent de structure d'adresse.
 import os
 
 # --- Pathé Toulouse Wilson ---
-# Slug de la page cinéma sur pathe.fr. À vérifier/ajuster si le site change.
+# Slug de la page cinéma sur pathe.fr. Conservé pour référence / usage futur,
+# mais N'EST PLUS utilisé par défaut : pathe.fr est protégé par Akamai Bot
+# Manager, qui bloque les requêtes automatisées (vérifié : ni les en-têtes
+# HTTP, ni curl_cffi, ni Playwright headless n'ont suffi à passer cette
+# protection). Voir ALLOCINE_SALLE_CODE ci-dessous pour la source utilisée à
+# la place.
 PATHE_CINEMA_SLUG = os.getenv("PATHE_CINEMA_SLUG", "cinema-pathe-wilson")
 PATHE_BASE_URL = "https://www.pathe.fr"
 PATHE_CINEMA_URL = f"{PATHE_BASE_URL}/cinemas/{PATHE_CINEMA_SLUG}"
@@ -13,6 +18,16 @@ PATHE_CINEMA_URL = f"{PATHE_BASE_URL}/cinemas/{PATHE_CINEMA_SLUG}"
 # --- AlloCiné ---
 ALLOCINE_BASE_URL = "https://www.allocine.fr"
 ALLOCINE_SEARCH_URL = f"{ALLOCINE_BASE_URL}/recherche/1/"
+
+# Code "salle" AlloCiné du Pathé Toulouse Wilson (trouvé sur la page du
+# cinéma : /seance/salle_gen_csalle=P0057.html). Cette page liste à la fois
+# les films à l'affiche, leurs séances ET leurs notes AlloCiné (presse et
+# spectateurs) en une seule page — c'est la source principale utilisée pour
+# récupérer les films/séances du Pathé Toulouse Wilson, à la place de
+# pathe.fr (bloqué par Akamai). Si ce code change un jour (renumérotation
+# AlloCiné), ajustez-le ici.
+ALLOCINE_SALLE_CODE = os.getenv("ALLOCINE_SALLE_CODE", "P0057")
+ALLOCINE_SALLE_URL = f"{ALLOCINE_BASE_URL}/seance/salle_gen_csalle={ALLOCINE_SALLE_CODE}.html"
 
 # --- HTTP ---
 DEFAULT_HEADERS = {

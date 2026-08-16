@@ -157,32 +157,36 @@ explicite est déjà incluse dans `docker-compose.yml` (`dns: 1.1.1.1, 8.8.8.8`)
    - `app/scrapers/allocine_scraper.py` (fonction `_extract_notes` et `_find_fiche_url`)
 4. Reconstruisez l'image : `docker compose up --build`
 
-### Si le site Pathé bloque les requêtes (403 Forbidden / Akamai)
+### Blocage par Akamai (403 Forbidden) — diagnostic final et solution retenue
 
-pathe.fr est protégé par **Akamai** (CDN + anti-bot). Trois niveaux de contournement, du plus léger
-au plus lourd, déjà implémentés ou documentés dans ce projet :
+pathe.fr est protégé par **Akamai Bot Manager**. Plusieurs approches ont été testées et écartées
+avant de trouver la bonne :
 
-1. **En-têtes HTTP réalistes + cookies de session** (déjà en place) : imite un vrai navigateur au
-   niveau applicatif (User-Agent, Accept, Sec-Fetch-*, visite préalable de la page d'accueil pour
-   obtenir des cookies). Suffisant contre un filtrage basique.
-2. **`curl_cffi` avec impersonation TLS** (déjà en place, activé automatiquement si le paquet est
-   installé) : Akamai/Cloudflare détectent aussi les bots via l'**empreinte TLS (JA3)** de la
-   connexion, un signal invisible au niveau des en-têtes et que la librairie `requests` standard ne
-   peut pas imiter. `curl_cffi` reproduit l'empreinte TLS d'un vrai Chrome. C'est souvent suffisant
-   contre une protection Akamai standard (pas en mode "Under Attack"/challenge JS interactif).
-3. **Navigateur headless (Playwright)** : si malgré `curl_cffi` vous obtenez toujours un blocage
-   (notamment une page avec du JavaScript de challenge, type "Vérification de votre navigateur..."),
-   c'est qu'Akamai exige l'exécution réelle de JavaScript pour valider le client. Il faut alors
-   remplacer la récupération HTTP par un vrai navigateur headless. Dites-le moi, je peux faire cet
-   ajustement (ajout de `playwright` + Chromium au `Dockerfile`, ce qui alourdit sensiblement
-   l'image et le temps de build).
+1. ❌ En-têtes HTTP réalistes (`requests`) — bloqué.
+2. ❌ `curl_cffi` avec impersonation TLS de Chrome — bloqué également (même page d'erreur).
+3. ❌ Playwright (vrai Chromium headless) — bloqué aussi.
+4. ✅ **`curl` (binaire système) en subprocess** — fonctionne de manière fiable.
 
-Pour savoir où vous en êtes après un nouveau build, regardez le fichier `./data/erreur_403_*.html`
-généré automatiquement en cas d'échec :
-- Une page courte type "Access Denied" ou une page d'erreur Akamai statique (comme celle observée,
-  `class="page-error maintenance"`) → niveaux 1-2 (déjà en place) peuvent suffire, sinon niveau 3.
-- Une page avec un script de challenge interactif, mention "Checking your browser" ou un compte à
-  rebours → niveau 3 (Playwright) nécessaire.
+**Diagnostic** : un test comparatif direct (`curl` vs `requests` Python, en-têtes strictement
+identiques, même URL, même réseau) a montré que `curl` passait systématiquement (200, cookies
+Akamai `_abck`/`bm_sz` posés normalement) alors que `requests` était systématiquement bloqué (403).
+Le blocage ne venait donc ni de l'IP, ni des en-têtes, ni d'un besoin d'exécution JavaScript, mais
+spécifiquement de l'**empreinte TLS/HTTP2** de la pile réseau utilisée — `libcurl` a une empreinte
+suffisamment "commune" pour passer la détection d'Akamai, contrairement à `urllib3` (utilisé par
+`requests`) et, dans ce cas précis, au client réseau de Chromium tel que piloté par Playwright.
+
+**Solution retenue** : `app/scrapers/pathe_scraper.py` appelle directement le binaire `curl` via
+`subprocess` plutôt qu'une librairie HTTP Python. C'est pour cette raison que `curl` est installé
+dans le `Dockerfile` (`apt-get install curl`).
+
+Si ce blocage devait réapparaître à l'avenir (Akamai peut faire évoluer sa détection), le premier
+réflexe est de reproduire le même test comparatif `curl` vs client Python directement dans le
+conteneur, pour confirmer si le diagnostic reste valable :
+```bash
+docker exec -it <nom_du_conteneur> curl -I -H "User-Agent: Mozilla/5.0" https://www.pathe.fr/cinemas/cinema-pathe-wilson
+```
+Le fichier `./data/erreur_*_*.html` généré automatiquement en cas d'échec contient toujours la
+page renvoyée par Akamai, utile pour diagnostiquer un nouveau blocage.
 
 ## Configuration (variables d'environnement)
 

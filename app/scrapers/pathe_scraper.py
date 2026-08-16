@@ -1,20 +1,26 @@
 """
 Scraper pour la page du cinéma Pathé Toulouse Wilson.
 
-Récupération de la page (3 niveaux, du plus léger au plus robuste) :
-1. Playwright (navigateur headless Chromium) — méthode principale. pathe.fr
-   est protégé par Akamai Bot Manager, qui exige l'exécution réelle de
-   JavaScript (télémétrie de session via Boomerang/mPulse) avant de laisser
-   passer une requête : aucun client HTTP, même avec une empreinte TLS
-   parfaitement imitée, ne peut satisfaire cette exigence. Un vrai navigateur
-   headless est donc nécessaire ici (vérifié empiriquement : curl_cffi seul
-   ne suffit pas contre cette protection).
-2. curl_cffi (empreinte TLS de Chrome) — repli si Playwright/Chromium n'est
-   pas disponible sur la plateforme (ex. installation échouée).
-3. requests classique — dernier repli si curl_cffi n'est pas non plus
-   disponible.
+Récupération de la page : appel direct au binaire `curl` (via subprocess),
+et non à une librairie HTTP Python (`requests`, `curl_cffi`) ni à un
+navigateur headless (Playwright).
 
-Extraction des données (une fois le HTML obtenu, quelle que soit la méthode) :
+Pourquoi : pathe.fr est derrière Akamai Bot Manager. Diagnostic effectué :
+- `curl` avec un simple en-tête User-Agent passe systématiquement (200),
+  cookies Akamai (_abck, bm_sz) posés normalement.
+- `requests` de Python, avec un en-tête User-Agent strictement identique,
+  sur la même URL, depuis le même réseau, est systématiquement bloqué (403).
+- Playwright (vrai Chromium headless) était également bloqué.
+
+Conclusion : le blocage ne vient ni de l'IP, ni des en-têtes, ni d'un besoin
+de JavaScript, mais spécifiquement de l'empreinte TLS/HTTP2 de la pile réseau
+utilisée. `curl` (libcurl) a une empreinte suffisamment "normale" pour passer
+la détection d'Akamai, contrairement à `urllib3` (utilisé par `requests`) et,
+apparemment, au client réseau de Chromium tel que lancé par Playwright dans ce
+contexte. Utiliser directement `curl` en subprocess reproduit donc à
+l'identique ce qui a été vérifié fonctionner.
+
+Extraction des données (une fois le HTML obtenu) :
 1. Les sites Pathé sont généralement construits en Next.js/React et embarquent
    souvent leurs données dans un <script id="__NEXT_DATA__">. On tente
    d'abord d'extraire ces données structurées, plus fiables qu'un parsing HTML.
@@ -29,10 +35,11 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from datetime import datetime
 from typing import List
 
-import requests
 from bs4 import BeautifulSoup
 
 from app.config import (
@@ -47,31 +54,14 @@ from app.models import Film, Seance
 
 logger = logging.getLogger("pathe_scraper")
 
-try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-    _HAS_PLAYWRIGHT = True
-except ImportError:
-    sync_playwright = None
-    PlaywrightTimeoutError = Exception
-    _HAS_PLAYWRIGHT = False
+_STATUS_MARKER = "__PATHE_SCRAPER_HTTP_STATUS__"
 
-try:
-    from curl_cffi import requests as cf_requests
-    _HAS_CURL_CFFI = True
-except ImportError:
-    cf_requests = None
-    _HAS_CURL_CFFI = False
 
-_IMPERSONATE_PROFILE = "chrome124"
-_PLAYWRIGHT_TIMEOUT_MS = REQUEST_TIMEOUT * 1000 * 2  # le rendu JS est plus lent qu'une requête HTTP
-
-# Session HTTP de repli (curl_cffi si possible, sinon requests), utilisée
-# uniquement si Playwright n'est pas disponible.
-if _HAS_CURL_CFFI:
-    _session = cf_requests.Session(impersonate=_IMPERSONATE_PROFILE)
-else:
-    _session = requests.Session()
-_session.headers.update(DEFAULT_HEADERS)
+class PatheFetchError(Exception):
+    def __init__(self, message: str, status_code: int | None = None, body: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 def _save_debug_html(html: str, name: str) -> None:
@@ -87,75 +77,56 @@ def _save_debug_html(html: str, name: str) -> None:
         logger.warning("Impossible de sauvegarder le HTML de debug: %s", e)
 
 
-def _fetch_html_playwright(url: str) -> str:
-    """Charge la page dans un vrai Chromium headless (exécute le JS Akamai)."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",  # requis : Chromium tourne en root dans le conteneur
-            ],
-        )
-        try:
-            context = browser.new_context(
-                user_agent=DEFAULT_HEADERS["User-Agent"],
-                locale="fr-FR",
-                viewport={"width": 1920, "height": 1080},
-            )
-            page = context.new_page()
-            page.goto(url, wait_until="networkidle", timeout=_PLAYWRIGHT_TIMEOUT_MS)
-            # Laisse le temps au JS Akamai / à d'éventuels appels API internes
-            # de charger les films après le rendu initial de la page.
-            page.wait_for_timeout(2000)
-            html = page.content()
-            return html
-        finally:
-            browser.close()
-
-
-def _fetch_html_http(url: str, referer: str | None = None) -> str:
-    """Repli sans navigateur (curl_cffi ou requests)."""
-    headers = {"Referer": referer} if referer else {}
-    resp = _session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-    if not resp.ok:
-        _save_debug_html(
-            resp.text, f"erreur_{resp.status_code}_{url.rsplit('/', 1)[-1] or 'page'}"
-        )
-        logger.warning(
-            "Réponse HTTP %s pour %s (taille du corps: %d octets)",
-            resp.status_code, url, len(resp.text),
-        )
-    resp.raise_for_status()
-    return resp.text
-
-
 def _fetch_html(url: str, referer: str | None = None) -> str:
     """
-    Récupère le HTML d'une page Pathé. Utilise Playwright en priorité
-    (nécessaire pour passer la protection Akamai Bot Manager), avec repli
-    automatique sur une requête HTTP classique si Playwright échoue ou n'est
-    pas disponible.
+    Récupère le HTML d'une page via le binaire `curl` en subprocess (voir
+    l'explication en tête de fichier sur pourquoi ce n'est PAS une requête
+    Python classique).
     """
-    if _HAS_PLAYWRIGHT:
-        try:
-            logger.info("Récupération de %s via Playwright (Chromium headless)", url)
-            return _fetch_html_playwright(url)
-        except PlaywrightTimeoutError as e:
-            logger.warning(
-                "Timeout Playwright sur %s (%s) — repli sur une requête HTTP classique", url, e
-            )
-        except Exception as e:
-            logger.warning(
-                "Échec Playwright sur %s (%s) — repli sur une requête HTTP classique", url, e
-            )
-    else:
-        logger.warning(
-            "Playwright non disponible : utilisation d'une requête HTTP classique "
-            "(risque élevé de blocage par la protection Akamai de pathe.fr)."
+    if shutil.which("curl") is None:
+        raise PatheFetchError(
+            "Le binaire `curl` n'est pas installé dans ce conteneur. "
+            "Vérifiez que le Dockerfile installe bien `curl` (apt-get install curl)."
         )
 
-    return _fetch_html_http(url, referer=referer)
+    cmd = [
+        "curl", "-s", "-L",
+        "--max-time", str(REQUEST_TIMEOUT),
+        "-H", f"User-Agent: {DEFAULT_HEADERS['User-Agent']}",
+        "-H", f"Accept-Language: {DEFAULT_HEADERS['Accept-Language']}",
+    ]
+    if referer:
+        cmd += ["-H", f"Referer: {referer}"]
+    # -w ajoute le code HTTP à la fin de la sortie, précédé d'un marqueur
+    # unique, pour pouvoir le séparer du corps de la réponse.
+    cmd += ["-w", f"\n{_STATUS_MARKER}%{{http_code}}", url]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=REQUEST_TIMEOUT + 5, check=False
+        )
+    except subprocess.TimeoutExpired as e:
+        raise PatheFetchError(f"curl a dépassé le délai imparti pour {url}: {e}") from e
+
+    if result.returncode != 0:
+        raise PatheFetchError(
+            f"curl a échoué (code {result.returncode}) pour {url}: {result.stderr.strip()}"
+        )
+
+    output = result.stdout
+    body, _, status_str = output.rpartition(_STATUS_MARKER)
+    try:
+        status_code = int(status_str.strip())
+    except ValueError:
+        status_code = None
+
+    if status_code is None or status_code >= 400:
+        _save_debug_html(body, f"erreur_{status_code}_{url.rsplit('/', 1)[-1] or 'page'}")
+        raise PatheFetchError(
+            f"Statut HTTP {status_code} pour {url}", status_code=status_code, body=body
+        )
+
+    return body
 
 
 def _try_extract_next_data(soup: BeautifulSoup) -> dict | None:
@@ -290,8 +261,7 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     logger.info("%d films extraits via parsing HTML de repli", len(films))
     if not films:
         logger.warning(
-            "Aucun film détecté. Le site a peut-être changé de structure, "
-            "ou nécessite un rendu JavaScript complet (envisager Playwright). "
+            "Aucun film détecté. Le site a peut-être changé de structure. "
             "Consultez le HTML de debug dans %s.", DEBUG_DATA_DIR
         )
     return films
