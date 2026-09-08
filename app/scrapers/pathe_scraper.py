@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from datetime import datetime
@@ -90,7 +91,7 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
         )
 
     cmd = [
-        "curl", "-s", "-L",
+        "curl", "-s", "-L", "-v",
         "-4",  # force IPv4 : la protection Akamai semble traiter différemment
                # les requêtes IPv6 (constaté : blocage systématique en IPv6,
                # alors que les tests manuels en IPv4 passaient).
@@ -104,12 +105,23 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
     # unique, pour pouvoir le séparer du corps de la réponse.
     cmd += ["-w", f"\n{_STATUS_MARKER}%{{http_code}}", url]
 
+    # Log de la commande exacte, copiable-collable telle quelle, pour pouvoir
+    # la reproduire manuellement à l'identique en cas de désaccord entre le
+    # comportement de l'app et un test manuel.
+    logger.info("Commande curl exécutée : %s", " ".join(shlex.quote(c) for c in cmd))
+
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=REQUEST_TIMEOUT + 5, check=False
         )
     except subprocess.TimeoutExpired as e:
         raise PatheFetchError(f"curl a dépassé le délai imparti pour {url}: {e}") from e
+
+    # Avec -v, curl écrit le détail de la connexion (IP contactée, poignée de
+    # main TLS, en-têtes envoyés/reçus) sur stderr. Précieux pour diagnostiquer
+    # un écart entre le comportement de l'app et un test manuel.
+    if result.stderr:
+        logger.info("Détail curl (-v) pour %s :\n%s", url, result.stderr)
 
     if result.returncode != 0:
         raise PatheFetchError(
