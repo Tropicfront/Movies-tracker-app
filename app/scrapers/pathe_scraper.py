@@ -91,6 +91,9 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
 
     cmd = [
         "curl", "-s", "-L",
+        "-4",  # force IPv4 : la protection Akamai semble traiter différemment
+               # les requêtes IPv6 (constaté : blocage systématique en IPv6,
+               # alors que les tests manuels en IPv4 passaient).
         "--max-time", str(REQUEST_TIMEOUT),
         "-H", f"User-Agent: {DEFAULT_HEADERS['User-Agent']}",
         "-H", f"Accept-Language: {DEFAULT_HEADERS['Accept-Language']}",
