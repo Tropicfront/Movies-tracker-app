@@ -3,22 +3,23 @@ Scraper pour la page du cinéma Pathé Toulouse Wilson.
 
 Récupération de la page : appel direct au binaire `curl` (via subprocess),
 et non à une librairie HTTP Python (`requests`, `curl_cffi`) ni à un
-navigateur headless (Playwright).
+navigateur headless (Playwright). `curl` reste utilisé par précaution (voir
+historique ci-dessous), même si la cause du blocage rencontré s'est avérée
+différente de ce qui était initialement suspecté.
 
-Pourquoi : pathe.fr est derrière Akamai Bot Manager. Diagnostic effectué :
-- `curl` avec un simple en-tête User-Agent passe systématiquement (200),
-  cookies Akamai (_abck, bm_sz) posés normalement.
-- `requests` de Python, avec un en-tête User-Agent strictement identique,
-  sur la même URL, depuis le même réseau, est systématiquement bloqué (403).
-- Playwright (vrai Chromium headless) était également bloqué.
-
-Conclusion : le blocage ne vient ni de l'IP, ni des en-têtes, ni d'un besoin
-de JavaScript, mais spécifiquement de l'empreinte TLS/HTTP2 de la pile réseau
-utilisée. `curl` (libcurl) a une empreinte suffisamment "normale" pour passer
-la détection d'Akamai, contrairement à `urllib3` (utilisé par `requests`) et,
-apparemment, au client réseau de Chromium tel que lancé par Playwright dans ce
-contexte. Utiliser directement `curl` en subprocess reproduit donc à
-l'identique ce qui a été vérifié fonctionner.
+Historique du diagnostic (pathe.fr est derrière Akamai) :
+- Étape 1 : `curl` passait, `requests` Python et Playwright étaient bloqués
+  (403) avec des en-têtes strictement identiques → suspicion d'empreinte
+  TLS/HTTP2. `curl` a donc été adopté comme méthode de récupération.
+- Étape 2 : le blocage a persisté même avec `curl` en subprocess. Un test
+  verbeux (`curl -v`) a révélé la vraie cause : la réponse 403 était servie
+  **depuis le cache d'Akamai** pour cette URL précise (en-têtes
+  `server-timing: cdn-cache; desc=HIT` et `cache-control: max-age=120`) —
+  probablement une erreur mise en cache lors des nombreux tests répétés
+  pendant le débogage, indépendamment des en-têtes/IP/TLS envoyés depuis.
+- Solution retenue : un paramètre de requête unique (`?_cb=<timestamp>`) à
+  chaque appel, pour forcer Akamai à traiter chaque requête comme une
+  nouvelle URL et contourner ce cache figé (voir `scrape_pathe_toulouse_wilson`).
 
 Extraction des données (une fois le HTML obtenu) :
 1. Les sites Pathé sont généralement construits en Next.js/React et embarquent
@@ -38,6 +39,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from typing import List
 
@@ -92,12 +94,14 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
 
     cmd = [
         "curl", "-s", "-L", "-v",
-        "-4",  # force IPv4 : la protection Akamai semble traiter différemment
-               # les requêtes IPv6 (constaté : blocage systématique en IPv6,
-               # alors que les tests manuels en IPv4 passaient).
+        "-4",  # force IPv4 (précaution ; la vraie cause du blocage observé
+               # était en réalité un 403 mis en cache par Akamai pour cette
+               # URL, voir le cache-busting dans scrape_pathe_toulouse_wilson)
         "--max-time", str(REQUEST_TIMEOUT),
         "-H", f"User-Agent: {DEFAULT_HEADERS['User-Agent']}",
         "-H", f"Accept-Language: {DEFAULT_HEADERS['Accept-Language']}",
+        "-H", "Cache-Control: no-cache",
+        "-H", "Pragma: no-cache",
     ]
     if referer:
         cmd += ["-H", f"Referer: {referer}"]
@@ -136,7 +140,8 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
         status_code = None
 
     if status_code is None or status_code >= 400:
-        _save_debug_html(body, f"erreur_{status_code}_{url.rsplit('/', 1)[-1] or 'page'}")
+        url_slug = url.rsplit('/', 1)[-1].split('?')[0] or 'page'
+        _save_debug_html(body, f"erreur_{status_code}_{url_slug}")
         raise PatheFetchError(
             f"Statut HTTP {status_code} pour {url}", status_code=status_code, body=body
         )
@@ -258,8 +263,15 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     Récupère la liste des films actuellement à l'affiche au Pathé Toulouse
     Wilson, avec leurs séances si disponibles.
     """
-    logger.info("Récupération de la page Pathé Toulouse Wilson: %s", PATHE_CINEMA_URL)
-    html = _fetch_html(PATHE_CINEMA_URL, referer=PATHE_BASE_URL)
+    # Contournement de cache : un test verbeux (curl -v) a montré que le 403
+    # rencontré était servi DEPUIS LE CACHE d'Akamai (server-timing:
+    # cdn-cache; desc=HIT, cache-control: max-age=120), probablement une
+    # ancienne erreur mise en cache lors des tests précédents. Un paramètre
+    # de requête unique à chaque appel force Akamai à traiter la requête
+    # comme une nouvelle URL, contournant ce cache figé.
+    cache_bust_url = f"{PATHE_CINEMA_URL}?_cb={int(time.time())}"
+    logger.info("Récupération de la page Pathé Toulouse Wilson: %s", cache_bust_url)
+    html = _fetch_html(cache_bust_url, referer=PATHE_BASE_URL)
     _save_debug_html(html, "pathe_toulouse_wilson")
 
     soup = BeautifulSoup(html, "lxml")
