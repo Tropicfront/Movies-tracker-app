@@ -48,6 +48,7 @@ from bs4 import BeautifulSoup
 from app.config import (
     PATHE_CINEMA_URL,
     PATHE_BASE_URL,
+    PATHE_COOKIE_JAR,
     DEFAULT_HEADERS,
     REQUEST_TIMEOUT,
     DEBUG_SAVE_HTML,
@@ -92,11 +93,17 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
             "Vérifiez que le Dockerfile installe bien `curl` (apt-get install curl)."
         )
 
+    os.makedirs(os.path.dirname(PATHE_COOKIE_JAR), exist_ok=True)
+
     cmd = [
         "curl", "-s", "-L", "-v",
-        "-4",  # force IPv4 (précaution ; la vraie cause du blocage observé
-               # était en réalité un 403 mis en cache par Akamai pour cette
-               # URL, voir le cache-busting dans scrape_pathe_toulouse_wilson)
+        "-4",  # force IPv4 : la connexion IPv6 échoue purement et simplement
+               # depuis ce conteneur (testé : "Could not connect to server").
+        # Pot de cookies persistant (lu ET écrit) : conserve les cookies
+        # Akamai (_abck, bm_sz) d'un appel à l'autre, comme le ferait un
+        # navigateur. Voir l'explication sur PATHE_COOKIE_JAR dans config.py.
+        "-c", PATHE_COOKIE_JAR,
+        "-b", PATHE_COOKIE_JAR,
         "--max-time", str(REQUEST_TIMEOUT),
         "-H", f"User-Agent: {DEFAULT_HEADERS['User-Agent']}",
         "-H", f"Accept-Language: {DEFAULT_HEADERS['Accept-Language']}",
@@ -147,6 +154,21 @@ def _fetch_html(url: str, referer: str | None = None) -> str:
         )
 
     return body
+
+
+def _warm_up() -> None:
+    """
+    Visite la page d'accueil pathe.fr avant la page cible, avec le même pot
+    de cookies persistant, pour obtenir/rafraîchir les cookies Akamai
+    (_abck, bm_sz) avant d'accéder à la page du cinéma — comme le ferait un
+    navigateur qui ne tombe jamais directement sur une page profonde sans
+    être passé par le site au préalable.
+    """
+    try:
+        _fetch_html(PATHE_BASE_URL)
+        logger.info("Warm-up sur %s effectué (cookies mis à jour dans %s)", PATHE_BASE_URL, PATHE_COOKIE_JAR)
+    except PatheFetchError as e:
+        logger.warning("Échec du warm-up sur %s (on continue quand même) : %s", PATHE_BASE_URL, e)
 
 
 def _try_extract_next_data(soup: BeautifulSoup) -> dict | None:
@@ -263,11 +285,17 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     Récupère la liste des films actuellement à l'affiche au Pathé Toulouse
     Wilson, avec leurs séances si disponibles.
 
-    Le blocage Akamai rencontré sur cette page s'est avéré intermittent
-    (parfois 200, parfois 403 selon le moment, indépendamment des en-têtes ou
-    de l'outil utilisé) plutôt que permanent — plusieurs tentatives avec un
-    délai entre chacune permettent donc souvent de passer.
+    pathe.fr est protégé par Akamai Bot Manager. Diagnostic final (voir
+    l'en-tête du fichier pour l'historique complet) : un test comparatif a
+    montré qu'un navigateur réel passe alors qu'un `curl` manuel avec les
+    mêmes en-têtes échoue, depuis la même IP — la différence la plus probable
+    étant que le navigateur conserve les cookies de réputation Akamai
+    (_abck, bm_sz) d'une visite à l'autre. D'où : un warm-up sur la page
+    d'accueil avant la page cible, et un pot de cookies persistant partagé
+    entre les deux (et entre redémarrages du conteneur).
     """
+    _warm_up()
+
     # Paramètre unique à chaque tentative : ne coûte rien, et évite qu'une
     # éventuelle réponse mise en cache (par Akamai ou un proxy intermédiaire)
     # ne soit reservie telle quelle à la tentative suivante.

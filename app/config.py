@@ -5,12 +5,12 @@ Modifiez ici les URLs si les sites changent de structure d'adresse.
 import os
 
 # --- Pathé Toulouse Wilson ---
-# Slug de la page cinéma sur pathe.fr. Conservé pour référence / usage futur,
-# mais N'EST PLUS utilisé par défaut : pathe.fr est protégé par Akamai Bot
-# Manager, qui bloque les requêtes automatisées (vérifié : ni les en-têtes
-# HTTP, ni curl_cffi, ni Playwright headless n'ont suffi à passer cette
-# protection). Voir ALLOCINE_SALLE_CODE ci-dessous pour la source utilisée à
-# la place.
+# Slug de la page cinéma sur pathe.fr. C'est la source actuellement utilisée
+# (app/scrapers/pathe_scraper.py). Le site est protégé par Akamai Bot
+# Manager ; voir la documentation en tête de pathe_scraper.py pour
+# l'historique du diagnostic et la solution retenue (curl + cookies
+# persistants). ALLOCINE_SALLE_CODE ci-dessous a été exploré comme piste
+# alternative mais n'est pas branché dans le pipeline actuel.
 PATHE_CINEMA_SLUG = os.getenv("PATHE_CINEMA_SLUG", "cinema-pathe-wilson")
 PATHE_BASE_URL = "https://www.pathe.fr"
 PATHE_CINEMA_URL = f"{PATHE_BASE_URL}/cinemas/{PATHE_CINEMA_SLUG}"
@@ -60,6 +60,14 @@ REQUEST_TIMEOUT = 15  # secondes
 # d'ajuster les sélecteurs CSS en cas de changement de structure des sites.
 DEBUG_SAVE_HTML = os.getenv("DEBUG_SAVE_HTML", "true").lower() == "true"
 DEBUG_DATA_DIR = os.getenv("DEBUG_DATA_DIR", "/app/data")
+
+# Pot de cookies curl persistant sur disque (dans /app/data, monté en volume,
+# donc conservé entre redémarrages du conteneur). Akamai Bot Manager pose des
+# cookies de réputation/session (_abck, bm_sz, valables jusqu'à 1 an) lors de
+# chaque visite ; un client qui ne les présente jamais à la visite suivante
+# ressemble à un bot, contrairement à un navigateur qui les conserve. Ce
+# fichier permet à curl de faire pareil.
+PATHE_COOKIE_JAR = os.getenv("PATHE_COOKIE_JAR", os.path.join(DEBUG_DATA_DIR, "pathe_cookies.txt"))
 
 # --- Jellyfin ---
 # URL de votre serveur Jellyfin, sans slash final (ex: http://192.168.1.10:8096)
