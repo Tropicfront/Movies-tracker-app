@@ -262,17 +262,39 @@ def scrape_pathe_toulouse_wilson() -> List[Film]:
     """
     Récupère la liste des films actuellement à l'affiche au Pathé Toulouse
     Wilson, avec leurs séances si disponibles.
+
+    Le blocage Akamai rencontré sur cette page s'est avéré intermittent
+    (parfois 200, parfois 403 selon le moment, indépendamment des en-têtes ou
+    de l'outil utilisé) plutôt que permanent — plusieurs tentatives avec un
+    délai entre chacune permettent donc souvent de passer.
     """
-    # Contournement de cache : un test verbeux (curl -v) a montré que le 403
-    # rencontré était servi DEPUIS LE CACHE d'Akamai (server-timing:
-    # cdn-cache; desc=HIT, cache-control: max-age=120), probablement une
-    # ancienne erreur mise en cache lors des tests précédents. Un paramètre
-    # de requête unique à chaque appel force Akamai à traiter la requête
-    # comme une nouvelle URL, contournant ce cache figé.
-    cache_bust_url = f"{PATHE_CINEMA_URL}?_cb={int(time.time())}"
-    logger.info("Récupération de la page Pathé Toulouse Wilson: %s", cache_bust_url)
-    html = _fetch_html(cache_bust_url, referer=PATHE_BASE_URL)
-    _save_debug_html(html, "pathe_toulouse_wilson")
+    # Paramètre unique à chaque tentative : ne coûte rien, et évite qu'une
+    # éventuelle réponse mise en cache (par Akamai ou un proxy intermédiaire)
+    # ne soit reservie telle quelle à la tentative suivante.
+    max_attempts = 3
+    delays = [3, 8]  # secondes d'attente entre les tentatives (croissant)
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        attempt_url = f"{PATHE_CINEMA_URL}?_cb={int(time.time())}"
+        logger.info(
+            "Récupération de la page Pathé Toulouse Wilson (tentative %d/%d): %s",
+            attempt, max_attempts, attempt_url,
+        )
+        try:
+            html = _fetch_html(attempt_url, referer=PATHE_BASE_URL)
+            _save_debug_html(html, "pathe_toulouse_wilson")
+            break
+        except PatheFetchError as e:
+            last_error = e
+            logger.warning("Tentative %d/%d échouée: %s", attempt, max_attempts, e)
+            if attempt < max_attempts:
+                delay = delays[attempt - 1]
+                logger.info("Nouvelle tentative dans %ds...", delay)
+                time.sleep(delay)
+    else:
+        # Toutes les tentatives ont échoué
+        raise last_error
 
     soup = BeautifulSoup(html, "lxml")
 
