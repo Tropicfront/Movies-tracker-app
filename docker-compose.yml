@@ -1,13 +1,14 @@
 services:
-  allocine-pathe-api:
+  movies-tracker:
+    image: tropicfront/movies_tracker:latest
     build: .
-    container_name: allocine-pathe-api
+    container_name: movies_tracker
     ports:
       - "8000:8000"
     environment:
       - DEBUG_SAVE_HTML=true
       - DEBUG_DATA_DIR=/app/data
-      # - PATHE_CINEMA_SLUG=pathe-toulouse-wilson  # à ajuster si besoin
+      # - ALLOCINE_SALLE_CODE=P0057                # code salle AlloCiné, à ajuster si besoin
       # --- Jellyfin (obligatoire pour la sync notes + le calendrier filtré) ---
       - JELLYFIN_URL=${JELLYFIN_URL:-}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}

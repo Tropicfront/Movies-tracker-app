@@ -1,57 +1,62 @@
-# Pathé Toulouse Wilson + AlloCiné + Jellyfin API
+# 🎬 Movies Tracker
 
-API REST (FastAPI) qui :
-- récupère les films actuellement à l'affiche au **Pathé Toulouse Wilson** (titre, séances, affiche...),
-- les enrichit de leur **note AlloCiné** (presse / spectateurs),
-- **injecte ces notes dans Jellyfin** (CommunityRating = note spectateurs, CriticRating = note presse) pour tous les films/séries de votre bibliothèque,
-- expose un **flux calendrier (.ics)** listant les films Pathé Toulouse Wilson dont le titre correspond à un film/série déjà présent dans votre bibliothèque Jellyfin — intégrable dans **Homepage** ou **Homarr**.
+Application Docker qui suit les films à l'affiche au **Pathé Toulouse Wilson** (séances du jour et notes AlloCiné), les injecte dans **Jellyfin**, et expose le tout via une **API REST**, une **page web**, et un **flux calendrier** intégrable dans un tableau de bord type Homepage ou Homarr.
 
-Le scraping Pathé/AlloCiné est effectué **une seule fois, au démarrage du conteneur**.
-La synchronisation Jellyfin est **automatique au démarrage si `JELLYFIN_URL`/`JELLYFIN_API_KEY` sont configurés**, et peut être relancée manuellement via `POST /jellyfin/sync-notes`.
-Le calendrier `.ics`, lui, est **généré à la volée à chaque requête** (toujours à jour par rapport aux dernières données en mémoire).
+## Fonctionnalités
 
-## ⚠️ Avertissement important
+- **Films à l'affiche** : titre, affiche, genres, synopsis, séances du jour (VF/VOST, horaires), notes AlloCiné (presse et spectateurs) — récupérés en une seule requête vers la page salle AlloCiné du cinéma.
+- **Page web** (`/`) : tout ce qui précède, présenté en cartes avec affiches, avec des boutons pour rafraîchir les données ou lancer la synchro Jellyfin.
+- **Synchro Jellyfin** : injecte la note AlloCiné de chaque film/série de votre bibliothèque dans `CommunityRating` (spectateurs) et `CriticRating` (presse) — visible directement dans les clients Jellyfin, comme des notes IMDb/Rotten Tomatoes.
+- **Calendrier iCal** (`/calendar.ics`) : les films à l'affiche dont le titre correspond à un titre déjà présent dans votre bibliothèque Jellyfin, intégrable dans Homepage ou Homarr.
+- **API REST** complète (voir [Endpoints](#endpoints)), documentée automatiquement sur `/docs`.
 
-Ce code a été écrit **sans pouvoir tester l'accès réel** à pathe.fr, allocine.fr, ni à un serveur
-Jellyfin réel (environnement de développement sans accès internet général ni serveur Jellyfin
-disponible). La logique de scraping et d'appel API Jellyfin est écrite sur la base de patterns
-documentés et habituels, mais **un ajustement est probable** au premier lancement chez vous.
-Voir [Déboguer le scraping](#déboguer-le-scraping) et [Déboguer Jellyfin](#déboguer-jellyfin).
+## Pourquoi AlloCiné plutôt que pathe.fr ?
 
-Pensez aussi à consulter les conditions d'utilisation d'AlloCiné et Pathé : ce projet est prévu
-pour un usage personnel/non commercial, avec une fréquence de scraping raisonnable.
+pathe.fr est protégé par **Akamai Bot Manager**, qui a résisté à toutes les tentatives de contournement testées (en-têtes réalistes, empreinte TLS type navigateur via `curl_cffi`, navigateur headless via Playwright, cookies de session persistants, limitation du volume de requêtes). AlloCiné héberge une page dédiée à ce cinéma qui liste films, séances et notes en une seule page, sans blocage rencontré — c'est donc la seule source utilisée par l'application.
 
 ## Démarrage rapide
 
 ```bash
 cp .env.example .env
-# éditez .env avec l'URL et la clé API de votre serveur Jellyfin
+# éditez .env : JELLYFIN_URL et JELLYFIN_API_KEY (Dashboard Jellyfin > Clés API)
 cp data/title_aliases.example.json data/title_aliases.json   # optionnel, voir plus bas
 docker compose up --build
 ```
 
-L'API est alors disponible sur `http://localhost:8000`.
-Documentation interactive (Swagger) : `http://localhost:8000/docs`
+L'application est disponible sur `http://localhost:8000` (page web) et `http://localhost:8000/docs` (documentation API interactive).
 
-Si vous ne voulez utiliser que le scraping Pathé/AlloCiné sans Jellyfin, ne renseignez simplement
-pas `JELLYFIN_URL`/`JELLYFIN_API_KEY` : ces fonctionnalités seront juste désactivées (log
-d'information au démarrage), le reste de l'API fonctionne normalement.
+Si vous ne voulez utiliser que le scraping AlloCiné sans Jellyfin, ne renseignez simplement pas `JELLYFIN_URL`/`JELLYFIN_API_KEY` : la synchro et le calendrier filtré seront juste désactivés (log d'information au démarrage), le reste de l'application fonctionne normalement.
+
+### Image Docker
+
+Le `docker-compose.yml` fourni construit l'image localement (`build: .`) et la tague `tropicfront/movies_tracker:latest`. Pour la publier sur Docker Hub après un premier build réussi :
+
+```bash
+docker compose build
+docker push tropicfront/movies_tracker:latest
+```
+
+D'autres machines peuvent alors utiliser directement l'image publiée sans avoir le code source, en retirant la ligne `build: .` de leur `docker-compose.yml`.
 
 ## Endpoints
 
 | Méthode | Route | Description |
 |---|---|---|
+| GET | `/` | **Page web** : films, affiches, notes, séances, statuts, boutons d'action |
 | GET | `/health` | Vérifie que le service tourne |
-| GET | `/statut` | Date du dernier scraping Pathé/AlloCiné, nb de films, erreurs |
-| POST | `/refresh` | Relance manuellement le scraping Pathé + AlloCiné |
-| GET | `/films` | Liste des films à l'affiche au Pathé Toulouse Wilson (+ note AlloCiné) |
+| GET | `/statut` | Date du dernier scraping, nb de films, erreurs |
+| POST | `/refresh` | Relance manuellement le scraping AlloCiné |
+| GET | `/films` | Liste des films à l'affiche (+ note AlloCiné) |
 | GET | `/films/{slug}` | Détail d'un film (séances, synopsis, note...) |
 | GET | `/allocine/note?titre=...&type=film\|serie` | Note AlloCiné pour n'importe quel titre |
 | POST | `/jellyfin/sync-notes` | Relance la synchro des notes AlloCiné → Jellyfin |
 | GET | `/jellyfin/statut` | Statut de la dernière synchro Jellyfin |
-| GET | `/calendar.ics` | Flux iCal des films Pathé présents dans votre bibliothèque Jellyfin |
+| GET | `/calendar.ics` | Flux iCal des films à l'affiche présents dans votre bibliothèque Jellyfin |
 
-## Intégration Jellyfin (notes AlloCiné)
+## Intégration Jellyfin
+
+Compatible Jellyfin 10.x et 12.x (12.0, sorti le 7 septembre 2026, a durci le format de l'en-tête
+d'authentification — ce client utilise le format strict requis, avec valeurs entre guillemets).
 
 1. Dans Jellyfin : **Dashboard → Clés API → Ajouter**, copiez la clé.
 2. Renseignez `JELLYFIN_URL` (ex: `http://192.168.1.10:8096`) et `JELLYFIN_API_KEY` dans `.env`.
@@ -59,30 +64,27 @@ d'information au démarrage), le reste de l'API fonctionne normalement.
    bibliothèque est recherché sur AlloCiné par titre, et :
    - la **note spectateurs** (/5) est convertie en `CommunityRating` (/10, ×2),
    - la **note presse** (/5) est convertie en `CriticRating` (/100, ×20).
-4. Ces champs s'affichent nativement dans les clients Jellyfin (web, apps mobiles/TV) comme des
-   badges de notation, au même endroit que les notes IMDb/Rotten Tomatoes habituelles.
+4. Ces champs s'affichent nativement dans les clients Jellyfin (web, apps mobiles/TV).
 
-Par mesure de sécurité, la mise à jour récupère toujours l'item Jellyfin complet avant de le
-renvoyer avec uniquement les deux champs de note modifiés (pour éviter un bug connu de Jellyfin où
-un envoi partiel peut corrompre les métadonnées d'un item).
+La mise à jour récupère toujours l'item Jellyfin complet avant de le renvoyer avec uniquement les
+deux champs de note modifiés (pour éviter un bug connu de Jellyfin où un envoi partiel peut
+corrompre les métadonnées d'un item).
 
 ### Déboguer Jellyfin
 
-- Si `POST /jellyfin/sync-notes` retourne des erreurs 401/403 : vérifiez la clé API.
-- Si la liste d'items récupérée est vide ou incomplète : certaines versions de Jellyfin exigent un
-  identifiant utilisateur pour lister les items. Renseignez alors `JELLYFIN_USER_ID` (visible dans
+- Erreurs 401/403 sur `POST /jellyfin/sync-notes` : vérifiez la clé API.
+- Bibliothèque vide ou incomplète : certaines versions de Jellyfin exigent un identifiant
+  utilisateur pour lister les items. Renseignez alors `JELLYFIN_USER_ID` (visible dans
   Dashboard → Utilisateurs, dans l'URL du profil) dans `.env`.
-- Consultez `GET /jellyfin/statut` pour voir le détail des erreurs (par titre) après une synchro.
+- `GET /jellyfin/statut` donne le détail des erreurs (par titre) après une synchro.
 
 ## Calendrier pour Homepage / Homarr
 
 L'endpoint `GET /calendar.ics` renvoie un flux iCal standard contenant uniquement les films
-actuellement à l'affiche au Pathé Toulouse Wilson **dont le titre correspond à un film/série déjà
-présent dans votre bibliothèque Jellyfin**.
+actuellement à l'affiche dont le titre correspond à un film/série déjà présent dans votre
+bibliothèque Jellyfin.
 
-### Configuration Homepage (gethomepage.dev)
-
-Dans `services.yaml` :
+**Homepage** (`services.yaml`) :
 ```yaml
 - Cinéma:
     widget:
@@ -93,112 +95,63 @@ Dans `services.yaml` :
           name: Pathé Toulouse Wilson
 ```
 
-### Configuration Homarr
+**Homarr** : widget **Calendar** → intégration **iCal générique** → renseignez
+`http://<adresse-de-ce-conteneur>:8000/calendar.ics`.
 
-Ajoutez un widget **Calendar**, choisissez l'intégration **iCal générique**, et renseignez :
-```
-http://<adresse-de-ce-conteneur>:8000/calendar.ics
-```
+### Correspondance des titres (AlloCiné en français vs Jellyfin)
 
-### Correspondance des titres (Pathé/AlloCiné en français vs Jellyfin)
-
-Le rapprochement entre le titre affiché au Pathé (généralement en français) et le titre dans votre
-bibliothèque Jellyfin (souvent dans la langue originale) se fait automatiquement pour les titres
-identiques ou très proches (accents, casse, ponctuation ignorés). Pour les titres réellement
-différents d'une langue à l'autre (ex. "Dune : Deuxième Partie" vs "Dune: Part Two"), utilisez le
-fichier d'alias éditable à chaud :
+Le rapprochement se fait automatiquement pour les titres identiques ou très proches (accents,
+casse, ponctuation ignorés). Pour les titres réellement différents d'une langue à l'autre
+(ex. "Dune : Deuxième Partie" vs "Dune: Part Two"), utilisez le fichier d'alias éditable à chaud :
 
 ```bash
 cp data/title_aliases.example.json data/title_aliases.json
 ```
-
 ```json
 {
   "Dune : Deuxième Partie": "Dune: Part Two",
   "Vice-Versa 2": "Inside Out 2"
 }
 ```
+Ce fichier est relu à chaque génération du calendrier : pas besoin de redémarrer le conteneur.
 
-Ce fichier est relu à chaque génération du calendrier : pas besoin de redémarrer le conteneur après
-modification.
+## ⚠️ Avertissement
 
-## Déboguer le scraping
+Le scraping AlloCiné a été testé avec des données réalistes reconstruites à partir de la vraie
+page, mais **pas contre le site en conditions réelles prolongées**. Si `/films` renvoie une liste
+vide ou incomplète, activez `DEBUG_SAVE_HTML=true` (déjà activé par défaut) et inspectez le fichier
+HTML sauvegardé dans `./data`.
 
-Si `/films` renvoie une liste vide ou incomplète, vérifiez d'abord dans les logs du conteneur
-(`docker compose logs -f`) s'il s'agit d'une erreur réseau (DNS, timeout) ou d'un problème de
-sélecteurs (voir plus bas).
+Consultez les conditions d'utilisation d'AlloCiné : ce projet est prévu pour un usage
+personnel/non commercial, avec une fréquence de scraping raisonnable (une fois au démarrage par défaut).
 
-### Erreur `Temporary failure in name resolution` / `NameResolutionError`
+**Limite connue** : la page salle AlloCiné n'affiche que les séances du jour actuellement
+sélectionné (aujourd'hui par défaut). Un sélecteur de date existe sur le site, mais son paramètre
+d'URL exact n'a pas été identifié.
 
-Cette erreur signifie que le **conteneur n'arrive pas à résoudre les noms de domaine** (DNS), pas
-un problème de code. C'est un souci assez courant selon les configurations Docker. Une config DNS
-explicite est déjà incluse dans `docker-compose.yml` (`dns: 1.1.1.1, 8.8.8.8`). Si ça persiste :
+## Déboguer le scraping AlloCiné
 
-1. Vérifiez que votre machine hôte a bien accès à internet et à un DNS fonctionnel.
-2. Redémarrez le démon Docker (`sudo systemctl restart docker` sous Linux, ou redémarrez Docker
-   Desktop).
-3. Si vous êtes derrière un VPN ou un pare-feu d'entreprise, celui-ci bloque parfois le DNS des
-   conteneurs — essayez de le désactiver temporairement pour confirmer.
-4. En dernier recours, testez en ligne de commande depuis l'intérieur du conteneur :
-   ```bash
-   docker compose exec allocine-pathe-api getent hosts www.pathe.fr
-   ```
-   Si ça échoue aussi, le problème est confirmé au niveau réseau Docker/hôte, pas dans ce projet.
+Si `/films` renvoie une liste vide ou incomplète :
 
-### Sélecteurs obsolètes (structure du site changée)
-
-1. Le HTML brut récupéré est automatiquement sauvegardé dans le dossier `./data` (monté depuis le
-   conteneur) grâce à `DEBUG_SAVE_HTML=true` (activé par défaut).
-2. Ouvrez les fichiers `pathe_toulouse_wilson_*.html` ou `allocine_*.html` dans un navigateur ou un
-   éditeur pour identifier la structure réelle (classes CSS, présence ou non d'un
-   `<script id="__NEXT_DATA__">`, etc.).
-3. Ajustez les sélecteurs dans :
-   - `app/scrapers/pathe_scraper.py` (fonction `_films_from_html_fallback` ou `_films_from_next_data`)
-   - `app/scrapers/allocine_scraper.py` (fonction `_extract_notes` et `_find_fiche_url`)
+1. Le HTML brut récupéré est automatiquement sauvegardé dans `./data` (monté depuis le conteneur).
+2. Ouvrez le fichier `allocine_salle_pathe_toulouse_wilson_*.html` pour identifier la structure
+   réelle si elle a changé.
+3. Ajustez les expressions régulières et sélecteurs dans
+   `app/scrapers/allocine_theater_scraper.py` (l'extraction se base sur le flux de texte après
+   chaque titre de film, pas sur des classes CSS précises).
 4. Reconstruisez l'image : `docker compose up --build`
-
-### Blocage par Akamai (403 Forbidden) — diagnostic final et solution retenue
-
-pathe.fr est protégé par **Akamai Bot Manager**. Plusieurs approches ont été testées et écartées
-avant de trouver la bonne :
-
-1. ❌ En-têtes HTTP réalistes (`requests`) — bloqué.
-2. ❌ `curl_cffi` avec impersonation TLS de Chrome — bloqué également (même page d'erreur).
-3. ❌ Playwright (vrai Chromium headless) — bloqué aussi.
-4. ✅ **`curl` (binaire système) en subprocess** — fonctionne de manière fiable.
-
-**Diagnostic** : un test comparatif direct (`curl` vs `requests` Python, en-têtes strictement
-identiques, même URL, même réseau) a montré que `curl` passait systématiquement (200, cookies
-Akamai `_abck`/`bm_sz` posés normalement) alors que `requests` était systématiquement bloqué (403).
-Le blocage ne venait donc ni de l'IP, ni des en-têtes, ni d'un besoin d'exécution JavaScript, mais
-spécifiquement de l'**empreinte TLS/HTTP2** de la pile réseau utilisée — `libcurl` a une empreinte
-suffisamment "commune" pour passer la détection d'Akamai, contrairement à `urllib3` (utilisé par
-`requests`) et, dans ce cas précis, au client réseau de Chromium tel que piloté par Playwright.
-
-**Solution retenue** : `app/scrapers/pathe_scraper.py` appelle directement le binaire `curl` via
-`subprocess` plutôt qu'une librairie HTTP Python. C'est pour cette raison que `curl` est installé
-dans le `Dockerfile` (`apt-get install curl`).
-
-Si ce blocage devait réapparaître à l'avenir (Akamai peut faire évoluer sa détection), le premier
-réflexe est de reproduire le même test comparatif `curl` vs client Python directement dans le
-conteneur, pour confirmer si le diagnostic reste valable :
-```bash
-docker exec -it <nom_du_conteneur> curl -I -H "User-Agent: Mozilla/5.0" https://www.pathe.fr/cinemas/cinema-pathe-wilson
-```
-Le fichier `./data/erreur_*_*.html` généré automatiquement en cas d'échec contient toujours la
-page renvoyée par Akamai, utile pour diagnostiquer un nouveau blocage.
 
 ## Configuration (variables d'environnement)
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `PATHE_CINEMA_SLUG` | `pathe-toulouse-wilson` | Slug de l'URL du cinéma sur pathe.fr |
+| `ALLOCINE_SALLE_CODE` | `P0057` | Code salle AlloCiné du Pathé Toulouse Wilson |
 | `DEBUG_SAVE_HTML` | `true` | Sauvegarde le HTML brut récupéré pour debug |
 | `DEBUG_DATA_DIR` | `/app/data` | Dossier de sauvegarde du HTML de debug |
 | `JELLYFIN_URL` | *(vide)* | URL du serveur Jellyfin, sans slash final |
 | `JELLYFIN_API_KEY` | *(vide)* | Clé API Jellyfin |
 | `JELLYFIN_USER_ID` | *(vide)* | Optionnel, voir [Déboguer Jellyfin](#déboguer-jellyfin) |
-| `TITLE_ALIASES_PATH` | `/app/data/title_aliases.json` | Fichier d'alias de titres Pathé ↔ Jellyfin |
+| `TITLE_ALIASES_PATH` | `/app/data/title_aliases.json` | Fichier d'alias de titres AlloCiné ↔ Jellyfin |
 | `TITLE_MATCH_THRESHOLD` | `0.85` | Seuil de similarité (0-1) pour le rapprochement approximatif de titres |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 
@@ -206,21 +159,22 @@ page renvoyée par Akamai, utile pour diagnostiquer un nouveau blocage.
 
 ```
 app/
-  main.py                    # Endpoints FastAPI
-  config.py                  # URLs, headers HTTP, config debug/Jellyfin/calendrier
-  models.py                  # Modèles Pydantic (Film, Seance, NoteAlloCine, StatutSyncJellyfin...)
-  storage.py                 # Stockage en mémoire + orchestration des pipelines
-  matching.py                # Normalisation et rapprochement de titres (+ alias)
-  jellyfin_client.py         # Client API Jellyfin (lecture bibliothèque + mise à jour notes)
-  calendar_builder.py        # Génération du flux ICS filtré par bibliothèque Jellyfin
+  main.py                        # Endpoints FastAPI + page web
+  config.py                      # URLs, headers HTTP, config debug/Jellyfin/calendrier
+  models.py                      # Modèles Pydantic (Film, Seance, NoteAlloCine, StatutSyncJellyfin...)
+  storage.py                     # Stockage en mémoire + orchestration des pipelines
+  matching.py                    # Normalisation et rapprochement de titres (+ alias)
+  jellyfin_client.py             # Client API Jellyfin (lecture bibliothèque + mise à jour notes)
+  calendar_builder.py            # Génération du flux ICS filtré par bibliothèque Jellyfin
   scrapers/
-    pathe_scraper.py         # Scraping Pathé Toulouse Wilson
-    allocine_scraper.py      # Scraping des notes AlloCiné
+    allocine_theater_scraper.py  # Films + séances + notes AlloCiné (source unique)
+    allocine_scraper.py          # Recherche de note AlloCiné par titre (endpoint générique + sync Jellyfin)
+  static/
+    dashboard.html               # Page web (route GET /) — lu à chaque requête, éditable sans rebuild
 data/
-  title_aliases.example.json # Exemple de fichier d'alias (à copier en title_aliases.json)
+  title_aliases.example.json     # Exemple de fichier d'alias (à copier en title_aliases.json)
 Dockerfile
 docker-compose.yml
 requirements.txt
 .env.example
 ```
-

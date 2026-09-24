@@ -34,10 +34,10 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 app = FastAPI(
-    title="Pathé Toulouse Wilson + AlloCiné API",
+    title="🎬 Movies Tracker",
     description=(
-        "Récupère les films à l'affiche au Pathé Toulouse Wilson et leurs "
-        "notes AlloCiné (presse / spectateurs)."
+        "Films à l'affiche au Pathé Toulouse Wilson, séances et notes AlloCiné, "
+        "synchronisés avec Jellyfin."
     ),
     version="1.0.0",
 )
