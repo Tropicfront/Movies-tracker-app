@@ -23,7 +23,7 @@ cp data/title_aliases.example.json data/title_aliases.json   # optionnel, voir p
 docker compose up --build
 ```
 
-L'application est disponible sur `http://localhost:8000` (page web) et `http://localhost:8000/docs` (documentation API interactive).
+L'application est disponible sur `http://localhost:8095` (page web) et `http://localhost:8095/docs` (documentation API interactive).
 
 Si vous ne voulez utiliser que le scraping AlloCiné sans Jellyfin, ne renseignez simplement pas `JELLYFIN_URL`/`JELLYFIN_API_KEY` : la synchro et le calendrier filtré seront juste désactivés (log d'information au démarrage), le reste de l'application fonctionne normalement.
 
@@ -91,12 +91,12 @@ bibliothèque Jellyfin.
       type: calendar
       integrations:
         - type: ical
-          url: http://<adresse-de-ce-conteneur>:8000/calendar.ics
+          url: http://<adresse-de-ce-conteneur>:8095/calendar.ics
           name: Pathé Toulouse Wilson
 ```
 
 **Homarr** : widget **Calendar** → intégration **iCal générique** → renseignez
-`http://<adresse-de-ce-conteneur>:8000/calendar.ics`.
+`http://<adresse-de-ce-conteneur>:8095/calendar.ics`.
 
 ### Correspondance des titres (AlloCiné en français vs Jellyfin)
 

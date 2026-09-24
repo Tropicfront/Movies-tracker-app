@@ -21,9 +21,9 @@ RUN mkdir -p /app/app/static
 # Dossier pour les HTML de debug (sélecteurs à ajuster si besoin)
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+EXPOSE 8095
 
 ENV DEBUG_SAVE_HTML=true
 ENV DEBUG_DATA_DIR=/app/data
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8095"]

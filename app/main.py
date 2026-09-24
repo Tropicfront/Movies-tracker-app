@@ -172,7 +172,7 @@ def calendar_ics() -> Response:
     À utiliser directement comme URL de calendrier dans Homepage
     (widget "calendar", type "ical") ou Homarr (widget "Calendar",
     intégration iCal). Exemple d'URL à renseigner :
-    http://<adresse-de-ce-conteneur>:8000/calendar.ics
+    http://<adresse-de-ce-conteneur>:8095/calendar.ics
     """
     ics_bytes = generate_calendar_ics()
     return Response(
