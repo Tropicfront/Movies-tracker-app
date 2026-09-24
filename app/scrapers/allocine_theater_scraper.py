@@ -146,12 +146,20 @@ def _extract_film_block(heading, next_heading_text: Optional[str]) -> Optional[F
     note_presse = _parse_note(presse_match.group(1)) if presse_match else None
     note_spectateurs = _parse_note(spect_match.group(1)) if spect_match else None
 
-    # Synopsis approximatif : première phrase longue après les notes
+    # Synopsis approximatif : première ligne longue qui n'est pas une ligne
+    # de métadonnées (genre/date, réalisateur, casting, classification...).
     synopsis = None
     for line in block_text.split("\n"):
-        if len(line) > 60 and "Réserver" not in line and "Choisissez" not in line:
-            synopsis = line
-            break
+        if len(line) <= 60:
+            continue
+        if "Réserver" in line or "Choisissez" in line:
+            continue
+        if _DATE_GENRE_PATTERN.match(line.strip()):
+            continue
+        if line.strip().startswith(("De ", "Avec ", "Titre original")):
+            continue
+        synopsis = line
+        break
 
     seances = _extract_seances(block_text)
 

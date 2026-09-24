@@ -4,28 +4,19 @@ Modifiez ici les URLs si les sites changent de structure d'adresse.
 """
 import os
 
-# --- Pathé Toulouse Wilson ---
-# Slug de la page cinéma sur pathe.fr. C'est la source actuellement utilisée
-# (app/scrapers/pathe_scraper.py). Le site est protégé par Akamai Bot
-# Manager ; voir la documentation en tête de pathe_scraper.py pour
-# l'historique du diagnostic et la solution retenue (curl + cookies
-# persistants). ALLOCINE_SALLE_CODE ci-dessous a été exploré comme piste
-# alternative mais n'est pas branché dans le pipeline actuel.
-PATHE_CINEMA_SLUG = os.getenv("PATHE_CINEMA_SLUG", "cinema-pathe-wilson")
-PATHE_BASE_URL = "https://www.pathe.fr"
-PATHE_CINEMA_URL = f"{PATHE_BASE_URL}/cinemas/{PATHE_CINEMA_SLUG}"
-
 # --- AlloCiné ---
 ALLOCINE_BASE_URL = "https://www.allocine.fr"
 ALLOCINE_SEARCH_URL = f"{ALLOCINE_BASE_URL}/recherche/1/"
 
-# Code "salle" AlloCiné du Pathé Toulouse Wilson (trouvé sur la page du
-# cinéma : /seance/salle_gen_csalle=P0057.html). Cette page liste à la fois
-# les films à l'affiche, leurs séances ET leurs notes AlloCiné (presse et
-# spectateurs) en une seule page — c'est la source principale utilisée pour
-# récupérer les films/séances du Pathé Toulouse Wilson, à la place de
-# pathe.fr (bloqué par Akamai). Si ce code change un jour (renumérotation
-# AlloCiné), ajustez-le ici.
+# Code "salle" AlloCiné du Pathé Toulouse Wilson (visible dans l'URL de la
+# page du cinéma : /seance/salle_gen_csalle=P0057.html). Cette page liste en
+# une seule fois les films à l'affiche, leurs séances DU JOUR ET leurs notes
+# AlloCiné (presse et spectateurs) — c'est la source unique utilisée par
+# l'application (voir app/scrapers/allocine_theater_scraper.py). pathe.fr a
+# été abandonné comme source : protégé par Akamai Bot Manager, qui a résisté
+# à toutes les tentatives de contournement (en-têtes réalistes, curl_cffi,
+# Playwright headless, cookies persistants, limitation du nombre de requêtes).
+# Si ce code change un jour (renumérotation AlloCiné), ajustez-le ici.
 ALLOCINE_SALLE_CODE = os.getenv("ALLOCINE_SALLE_CODE", "P0057")
 ALLOCINE_SALLE_URL = f"{ALLOCINE_BASE_URL}/seance/salle_gen_csalle={ALLOCINE_SALLE_CODE}.html"
 
@@ -40,34 +31,14 @@ DEFAULT_HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
 }
 REQUEST_TIMEOUT = 15  # secondes
 
 # --- Debug ---
 # Si activé, sauvegarde le HTML brut récupéré dans /app/data pour permettre
-# d'ajuster les sélecteurs CSS en cas de changement de structure des sites.
+# d'ajuster les sélecteurs CSS en cas de changement de structure du site.
 DEBUG_SAVE_HTML = os.getenv("DEBUG_SAVE_HTML", "true").lower() == "true"
 DEBUG_DATA_DIR = os.getenv("DEBUG_DATA_DIR", "/app/data")
-
-# Pot de cookies curl persistant sur disque (dans /app/data, monté en volume,
-# donc conservé entre redémarrages du conteneur). Akamai Bot Manager pose des
-# cookies de réputation/session (_abck, bm_sz, valables jusqu'à 1 an) lors de
-# chaque visite ; un client qui ne les présente jamais à la visite suivante
-# ressemble à un bot, contrairement à un navigateur qui les conserve. Ce
-# fichier permet à curl de faire pareil.
-PATHE_COOKIE_JAR = os.getenv("PATHE_COOKIE_JAR", os.path.join(DEBUG_DATA_DIR, "pathe_cookies.txt"))
 
 # --- Jellyfin ---
 # URL de votre serveur Jellyfin, sans slash final (ex: http://192.168.1.10:8096)
@@ -84,9 +55,9 @@ def jellyfin_configured() -> bool:
 # --- Calendrier (ICS) ---
 CALENDAR_NAME = os.getenv("CALENDAR_NAME", "Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)")
 
-# --- Correspondance de titres (matching Pathé <-> Jellyfin) ---
+# --- Correspondance de titres (matching AlloCiné <-> Jellyfin) ---
 # Fichier JSON éditable à chaud (monté en volume) pour déclarer des alias de
-# titres quand le titre français (Pathé/AlloCiné) diffère du titre Jellyfin
+# titres quand le titre français (AlloCiné) diffère du titre Jellyfin
 # (souvent en anglais). Exemple de contenu :
 # {"Dune : Deuxième Partie": "Dune: Part Two"}
 TITLE_ALIASES_PATH = os.getenv("TITLE_ALIASES_PATH", "/app/data/title_aliases.json")

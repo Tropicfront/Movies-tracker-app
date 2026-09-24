@@ -85,7 +85,7 @@ def statut() -> StatutScraping:
 @app.post("/refresh", response_model=StatutScraping, tags=["Système"])
 def refresh() -> StatutScraping:
     """
-    Relance manuellement le scraping (Pathé + AlloCiné).
+    Relance manuellement le scraping AlloCiné (films, séances, notes).
     Utile si vous voulez rafraîchir les données sans redémarrer le conteneur,
     même si la configuration par défaut ne scrape qu'au démarrage.
     """

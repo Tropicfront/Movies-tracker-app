@@ -1,10 +1,7 @@
 """
 Stockage en mémoire des films scrapés + orchestration du pipeline
-(Pathé Toulouse Wilson -> enrichissement AlloCiné).
-
-Les données sont récupérées une seule fois (au démarrage du conteneur, ou
-manuellement via POST /refresh) et gardées en mémoire pour être servies par
-l'API. Pas de base de données : simple et suffisant pour ce cas d'usage.
+(page salle AlloCiné du Pathé Toulouse Wilson -> films + séances + notes,
+le tout en une seule source).
 """
 import logging
 import re
@@ -14,7 +11,7 @@ from threading import Lock
 from typing import List, Optional
 
 from app.models import Film, StatutScraping, StatutSyncJellyfin
-from app.scrapers.pathe_scraper import scrape_pathe_toulouse_wilson
+from app.scrapers.allocine_theater_scraper import scrape_allocine_theater
 from app.scrapers.allocine_scraper import get_note_allocine
 from app import jellyfin_client
 
@@ -43,32 +40,30 @@ def _slugify(titre: str) -> str:
 
 def run_scraping_pipeline() -> StatutScraping:
     """
-    Lance le pipeline complet :
-    1. Récupère les films à l'affiche au Pathé Toulouse Wilson.
-    2. Pour chaque film, récupère sa note AlloCiné.
-    3. Stocke le résultat en mémoire.
+    Récupère les films à l'affiche, leurs séances et leurs notes AlloCiné
+    pour le Pathé Toulouse Wilson, en une seule requête vers la page salle
+    AlloCiné dédiée (voir app/scrapers/allocine_theater_scraper.py).
+
+    Contrairement à l'ancienne version (pathe.fr + recherche AlloCiné par
+    titre pour chaque film), les notes sont déjà présentes sur cette page,
+    directement associées au bon film : pas de risque de mauvaise
+    correspondance de titre.
 
     Ne lève jamais d'exception : les erreurs sont capturées et reportées dans
     le statut, pour ne pas empêcher le démarrage de l'API en cas de souci
-    réseau ou de changement de structure d'un des deux sites.
+    réseau ou de changement de structure du site.
     """
     global _films, _statut
     erreurs: List[str] = []
     films: List[Film] = []
 
     try:
-        films = scrape_pathe_toulouse_wilson()
-    except Exception as e:
-        logger.exception("Échec du scraping Pathé Toulouse Wilson")
-        erreurs.append(f"Pathé: {e}")
-
-    for film in films:
-        try:
+        films = scrape_allocine_theater()
+        for film in films:
             film.slug = _slugify(film.titre)
-            film.allocine = get_note_allocine(film.titre, type_="film")
-        except Exception as e:
-            logger.exception("Échec récupération note AlloCiné pour '%s'", film.titre)
-            erreurs.append(f"AlloCiné ({film.titre}): {e}")
+    except Exception as e:
+        logger.exception("Échec du scraping AlloCiné (page salle)")
+        erreurs.append(f"AlloCiné: {e}")
 
     with _lock:
         _films = films
