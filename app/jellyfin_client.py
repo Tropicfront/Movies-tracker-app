@@ -2,9 +2,19 @@
 Client pour l'API Jellyfin.
 
 Utilisé pour :
-1. Lister les films/séries de la bibliothèque (pour le matching avec Pathé
-   et pour savoir quels titres noter via AlloCiné).
+1. Lister les films/séries de la bibliothèque (pour le matching et pour
+   savoir quels titres noter via AlloCiné).
 2. Mettre à jour les champs CommunityRating / CriticRating d'un item.
+
+Compatibilité Jellyfin 12.x : depuis la version 12.0 (7 septembre 2026),
+Jellyfin désactive par défaut l'authentification "legacy" (en-têtes
+X-Emby-Token/X-MediaBrowser-Token, paramètre ?api_key=) et exige le format
+strict du schéma "MediaBrowser" pour l'en-tête Authorization, avec les
+valeurs entre guillemets : `Authorization: MediaBrowser Token="...", ...`.
+Ce client utilise déjà exclusivement les chemins natifs (/Items, /Users) et
+l'en-tête Authorization — donc compatible avec Jellyfin 10.x comme 12.x —
+mais le format de l'en-tête a été corrigé pour respecter cette syntaxe
+stricte (les anciennes versions étaient tolérantes, 12.x l'est moins).
 
 Note sur la mise à jour : pour éviter un bug connu de Jellyfin où l'envoi
 d'un payload PARTIEL à POST /Items/{itemId} peut corrompre l'item (nécessitant
@@ -31,8 +41,17 @@ class JellyfinError(Exception):
 
 
 def _headers() -> dict:
+    # Schéma d'authentification Jellyfin, format strict requis depuis 12.x :
+    # valeurs entre guillemets doubles, séparées par des virgules.
+    auth = (
+        'MediaBrowser Client="AllocinePatheJellyfinSync", '
+        'Device="Docker", '
+        'DeviceId="allocine-pathe-jellyfin-sync", '
+        'Version="1.0.0", '
+        f'Token="{JELLYFIN_API_KEY}"'
+    )
     return {
-        "Authorization": f"MediaBrowser Token={JELLYFIN_API_KEY}",
+        "Authorization": auth,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }

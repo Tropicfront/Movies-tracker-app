@@ -124,6 +124,15 @@ def _extract_film_block(heading, next_heading_text: Optional[str]) -> Optional[F
         return None
     url_fiche = urljoin(ALLOCINE_BASE_URL, href)
 
+    # Affiche : l'image la plus proche précédant le titre dans le document
+    # (structure observée : <img poster> juste avant chaque <h2> de film).
+    affiche_url = None
+    img = heading.find_previous("img")
+    if img is not None:
+        src = img.get("src") or img.get("data-src")
+        if src:
+            affiche_url = urljoin(ALLOCINE_BASE_URL, src)
+
     # Récupère le texte du bloc : tout ce qui suit ce titre dans le document,
     # jusqu'au texte du titre suivant (ou toute la fin si c'est le dernier film).
     block_parts = []
@@ -172,6 +181,7 @@ def _extract_film_block(heading, next_heading_text: Optional[str]) -> Optional[F
 
     return Film(
         titre=titre,
+        affiche_url=affiche_url,
         genres=genres,
         synopsis=synopsis,
         seances=seances,

@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pathé Toulouse Wilson — Films à l'affiche</title>
+<style>
+  :root {
+    --bg: #f4f4f6;
+    --card-bg: #ffffff;
+    --text: #1a1a1e;
+    --text-muted: #6b6b74;
+    --accent: #e63946;
+    --accent-2: #1d3557;
+    --border: #e2e2e7;
+    --badge-bg: #f0f0f3;
+    --success: #2a9d5c;
+    --error: #d1495b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14141a;
+      --card-bg: #1e1e26;
+      --text: #f0f0f3;
+      --text-muted: #9a9aa5;
+      --accent: #ff6b74;
+      --accent-2: #7ba7d9;
+      --border: #2e2e38;
+      --badge-bg: #2a2a34;
+      --success: #4fbf80;
+      --error: #ff7a8a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding-bottom: 3rem;
+  }
+  header {
+    padding: 1.5rem 1.25rem 1rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin: 0 0 0.25rem;
+  }
+  .subtitle {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin: 0;
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 1rem;
+    align-items: center;
+  }
+  button, .btn {
+    background: var(--accent-2);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  button:hover, .btn:hover { opacity: 0.88; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .status-bar {
+    max-width: 1100px;
+    margin: 0.75rem auto 0;
+    padding: 0 1.25rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .status-bar .err { color: var(--error); }
+  .status-bar .ok { color: var(--success); }
+  main {
+    max-width: 1100px;
+    margin: 1.5rem auto 0;
+    padding: 0 1.25rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1.1rem;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .poster {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    background: var(--badge-bg);
+  }
+  .card-body {
+    padding: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1;
+  }
+  .card h2 {
+    font-size: 1.02rem;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .card h2 a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .card h2 a:hover { color: var(--accent-2); }
+  .genres {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .notes {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .badge {
+    background: var(--badge-bg);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.78rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .badge b { color: var(--accent); }
+  .synopsis {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .seances {
+    margin-top: auto;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+  .seance-groupe {
+    margin-bottom: 0.3rem;
+  }
+  .seance-version {
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-right: 0.3rem;
+  }
+  .heure {
+    display: inline-block;
+    background: var(--badge-bg);
+    border-radius: 6px;
+    padding: 0.1rem 0.4rem;
+    margin: 0.1rem 0.2rem 0.1rem 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .empty, .loading {
+    color: var(--text-muted);
+    padding: 3rem 1rem;
+    text-align: center;
+  }
+  footer {
+    max-width: 1100px;
+    margin: 2.5rem auto 0;
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    justify-content: space-between;
+  }
+  footer a { color: var(--accent-2); }
+  code {
+    background: var(--badge-bg);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.82em;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎬 Pathé Toulouse Wilson</h1>
+  <p class="subtitle">Films à l'affiche aujourd'hui, séances et notes AlloCiné</p>
+  <div class="toolbar">
+    <button id="btn-refresh" onclick="refresh()">↻ Rafraîchir les films</button>
+    <a class="btn" href="/calendar.ics">📅 Flux calendrier (.ics)</a>
+    <a class="btn" href="/docs">🔧 Documentation API</a>
+    <button id="btn-jellyfin" onclick="syncJellyfin()" style="display:none;">🔄 Synchroniser Jellyfin</button>
+  </div>
+</header>
+
+<div class="status-bar" id="status-bar">Chargement…</div>
+
+<main>
+  <div id="content" class="loading">Chargement des films…</div>
+</main>
+
+<footer>
+  <span>Dernière donnée générée par le conteneur — actualisez la page pour la revoir.</span>
+  <span>Endpoints : <code>/films</code> · <code>/statut</code> · <code>/jellyfin/statut</code> · <code>/calendar.ics</code></span>
+</footer>
+
+<script>
+async function fetchJSON(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) throw new Error(url + ' -> HTTP ' + res.status);
+  return res.json();
+}
+
+function fmtDate(iso) {
+  if (!iso) return 'jamais';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+  } catch { return iso; }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s ?? '';
+  return div.innerHTML;
+}
+
+function renderNoteBadge(label, value) {
+  if (value === null || value === undefined) return '';
+  return `<span class="badge">${label} <b>${value.toFixed(1)}</b>/5</span>`;
+}
+
+function groupSeancesByVersion(seances) {
+  const groups = {};
+  for (const s of seances || []) {
+    const key = s.version || 'Version inconnue';
+    groups[key] = groups[key] || [];
+    if (s.heure) groups[key].push(s.heure);
+  }
+  return groups;
+}
+
+function renderFilmCard(film) {
+  const groups = groupSeancesByVersion(film.seances);
+  const seancesHtml = Object.entries(groups).map(([version, heures]) => `
+    <div class="seance-groupe">
+      <span class="seance-version">${escapeHtml(version)}</span>
+      ${heures.map(h => `<span class="heure">${escapeHtml(h)}</span>`).join('')}
+    </div>
+  `).join('') || '<span style="color:var(--text-muted)">Horaires non disponibles</span>';
+
+  const notes = film.allocine || {};
+  const notesHtml = (renderNoteBadge('Presse', notes.note_presse) + renderNoteBadge('Spectateurs', notes.note_spectateurs))
+    || '<span class="badge">Pas de note</span>';
+
+  const poster = film.affiche_url
+    ? `<img class="poster" src="${escapeHtml(film.affiche_url)}" alt="Affiche de ${escapeHtml(film.titre)}" loading="lazy">`
+    : `<div class="poster"></div>`;
+
+  const titreHtml = notes.url_fiche
+    ? `<a href="${escapeHtml(notes.url_fiche)}" target="_blank" rel="noopener">${escapeHtml(film.titre)}</a>`
+    : escapeHtml(film.titre);
+
+  return `
+    <div class="card">
+      ${poster}
+      <div class="card-body">
+        <h2>${titreHtml}</h2>
+        ${film.genres && film.genres.length ? `<div class="genres">${film.genres.map(escapeHtml).join(' · ')}</div>` : ''}
+        <div class="notes">${notesHtml}</div>
+        ${film.synopsis ? `<div class="synopsis">${escapeHtml(film.synopsis)}</div>` : ''}
+        <div class="seances">${seancesHtml}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadFilms() {
+  const content = document.getElementById('content');
+  try {
+    const films = await fetchJSON('/films');
+    if (!films.length) {
+      content.innerHTML = '<div class="empty">Aucun film récupéré pour le moment. Cliquez sur "Rafraîchir les films", ou consultez <code>/statut</code> pour voir les erreurs éventuelles.</div>';
+      return;
+    }
+    content.className = '';
+    content.innerHTML = `<div class="grid">${films.map(renderFilmCard).join('')}</div>`;
+  } catch (e) {
+    content.innerHTML = `<div class="empty">Erreur de chargement des films : ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadStatus() {
+  const bar = document.getElementById('status-bar');
+  try {
+    const statut = await fetchJSON('/statut');
+    let html = `Dernière mise à jour : <b>${fmtDate(statut.derniere_maj)}</b> — ${statut.nb_films} film(s)`;
+    if (statut.erreurs && statut.erreurs.length) {
+      html += ` — <span class="err">${statut.erreurs.length} erreur(s) : ${escapeHtml(statut.erreurs.join(' | '))}</span>`;
+    } else {
+      html += ` — <span class="ok">OK</span>`;
+    }
+    bar.innerHTML = html;
+  } catch (e) {
+    bar.textContent = 'Statut indisponible : ' + e.message;
+  }
+}
+
+async function loadJellyfinStatus() {
+  try {
+    const s = await fetchJSON('/jellyfin/statut');
+    if (s.derniere_sync) {
+      document.getElementById('btn-jellyfin').style.display = 'inline-flex';
+      const bar = document.getElementById('status-bar');
+      bar.innerHTML += ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
+    } else {
+      // Pas encore synchronisé, mais on affiche quand même le bouton pour permettre un premier essai manuel
+      document.getElementById('btn-jellyfin').style.display = 'inline-flex';
+    }
+  } catch {
+    // Jellyfin non configuré ou endpoint indisponible : on n'affiche pas le bouton
+  }
+}
+
+async function refresh() {
+  const btn = document.getElementById('btn-refresh');
+  btn.disabled = true;
+  btn.textContent = '↻ Rafraîchissement en cours…';
+  try {
+    await fetchJSON('/refresh', { method: 'POST' });
+    await Promise.all([loadFilms(), loadStatus()]);
+  } catch (e) {
+    alert('Échec du rafraîchissement : ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Rafraîchir les films';
+  }
+}
+
+async function syncJellyfin() {
+  const btn = document.getElementById('btn-jellyfin');
+  btn.disabled = true;
+  btn.textContent = '🔄 Synchronisation…';
+  try {
+    await fetchJSON('/jellyfin/sync-notes', { method: 'POST' });
+    await loadJellyfinStatus();
+  } catch (e) {
+    alert('Échec de la synchronisation Jellyfin : ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Synchroniser Jellyfin';
+  }
+}
+
+loadFilms();
+loadStatus();
+loadJellyfinStatus();
+</script>
+
+</body>
+</html>

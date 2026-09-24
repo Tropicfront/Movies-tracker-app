@@ -6,10 +6,12 @@ Le scraping est effectué une fois au démarrage du conteneur. Un endpoint
 POST /refresh permet de le relancer manuellement sans redémarrer le service.
 """
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 
 from app.models import Film, NoteAlloCine, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_scraper import get_note_allocine
@@ -43,6 +45,20 @@ app = FastAPI(
 # Fichiers statiques éventuels (favicon, images...). Le dossier existe toujours
 # (même vide, via .gitkeep) pour éviter une erreur au montage.
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+_DASHBOARD_PATH = Path(__file__).parent / "static" / "dashboard.html"
+
+
+@app.get("/", response_class=HTMLResponse, tags=["Interface"])
+def dashboard() -> HTMLResponse:
+    """
+    Page web listant les films à l'affiche, leurs séances, leurs notes
+    AlloCiné, et les statuts de scraping / synchro Jellyfin. Lit le fichier
+    à chaque requête (pas de cache), donc éditable sans reconstruire l'image.
+    """
+    if not _DASHBOARD_PATH.exists():
+        raise HTTPException(status_code=500, detail="dashboard.html introuvable dans app/static/")
+    return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
 
 
 @app.on_event("startup")
