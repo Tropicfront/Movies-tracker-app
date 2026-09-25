@@ -5,11 +5,13 @@ le tout en une seule source).
 """
 import logging
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone
 from threading import Lock
 from typing import List, Optional
 
+from app.config import ALLOCINE_SYNC_DELAY_SECONDS
 from app.models import Film, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_theater_scraper import scrape_allocine_theater
 from app.scrapers.allocine_scraper import get_note_allocine
@@ -120,12 +122,18 @@ def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
             _statut_sync_jellyfin = statut
         return statut
 
-    for item in items:
+    for i, item in enumerate(items):
         titre = item.get("Name")
         item_id = item.get("Id")
         item_type = item.get("Type")  # "Movie" ou "Series"
         if not titre or not item_id:
             continue
+
+        # Pause entre chaque titre : la synchro peut interroger AlloCiné pour
+        # des dizaines/centaines de titres à la suite, ce qui peut déclencher
+        # une limitation de débit (429 Too Many Requests) sans cette pause.
+        if i > 0 and ALLOCINE_SYNC_DELAY_SECONDS > 0:
+            time.sleep(ALLOCINE_SYNC_DELAY_SECONDS)
 
         type_allocine = "film" if item_type == "Movie" else "serie"
 

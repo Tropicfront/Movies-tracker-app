@@ -153,6 +153,7 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `JELLYFIN_USER_ID` | *(vide)* | Optionnel, voir [Déboguer Jellyfin](#déboguer-jellyfin) |
 | `TITLE_ALIASES_PATH` | `/app/data/title_aliases.json` | Fichier d'alias de titres AlloCiné ↔ Jellyfin |
 | `TITLE_MATCH_THRESHOLD` | `0.85` | Seuil de similarité (0-1) pour le rapprochement approximatif de titres |
+| `ALLOCINE_SYNC_DELAY_SECONDS` | `1.0` | Pause entre chaque titre lors de la synchro Jellyfin (évite les 429 AlloCiné sur les grosses bibliothèques) |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 
 ## Structure du projet

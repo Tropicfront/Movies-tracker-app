@@ -14,6 +14,7 @@ pour inspecter le HTML brut sauvegardé.
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
@@ -49,9 +50,30 @@ def _save_debug_html(html: str, name: str) -> None:
 
 
 def _fetch_html(url: str, params: dict | None = None) -> str:
-    resp = requests.get(url, headers=DEFAULT_HEADERS, params=params, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.text
+    """
+    Requête GET avec gestion du 429 (Too Many Requests) : nouvelle tentative
+    après une pause, en respectant l'en-tête Retry-After du serveur s'il est
+    présent, sinon une pause par défaut. Utile notamment lors de la synchro
+    Jellyfin, qui peut interroger AlloCiné pour de nombreux titres à la suite.
+    """
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        resp = requests.get(url, headers=DEFAULT_HEADERS, params=params, timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 429 and attempt < max_retries:
+            retry_after = resp.headers.get("Retry-After")
+            try:
+                wait = float(retry_after) if retry_after else 5.0
+            except ValueError:
+                wait = 5.0
+            wait = min(max(wait, 1.0), 30.0)  # borné entre 1s et 30s
+            logger.warning(
+                "429 Too Many Requests pour %s (tentative %d/%d) — attente %.1fs avant réessai",
+                url, attempt, max_retries, wait,
+            )
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.text
 
 
 def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:

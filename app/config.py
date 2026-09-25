@@ -34,6 +34,11 @@ DEFAULT_HEADERS = {
 }
 REQUEST_TIMEOUT = 15  # secondes
 
+# Pause (en secondes) entre chaque titre lors de la synchro Jellyfin, pour
+# éviter de déclencher une limitation de débit (429) sur AlloCiné quand la
+# bibliothèque contient beaucoup de films/séries.
+ALLOCINE_SYNC_DELAY_SECONDS = float(os.getenv("ALLOCINE_SYNC_DELAY_SECONDS", "1.0"))
+
 # --- Debug ---
 # Si activé, sauvegarde le HTML brut récupéré dans /app/data pour permettre
 # d'ajuster les sélecteurs CSS en cas de changement de structure du site.
