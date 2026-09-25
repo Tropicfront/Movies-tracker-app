@@ -126,12 +126,29 @@ def _extract_film_block(heading, next_heading_text: Optional[str]) -> Optional[F
 
     # Affiche : l'image la plus proche précédant le titre dans le document
     # (structure observée : <img poster> juste avant chaque <h2> de film).
+    # Le site charge les affiches en différé ("lazy loading") au-delà de la
+    # première : leur attribut `src` est alors vide ou un placeholder, et la
+    # vraie URL se trouve dans un attribut data-* alternatif. On teste les
+    # noms les plus courants, dans l'ordre, et on ignore les valeurs qui
+    # ressemblent à un placeholder plutôt qu'à une vraie image.
     affiche_url = None
     img = heading.find_previous("img")
     if img is not None:
-        src = img.get("src") or img.get("data-src")
-        if src:
-            affiche_url = urljoin(ALLOCINE_BASE_URL, src)
+        candidate_attrs = [
+            "src", "data-src", "data-lazy-src", "data-lazy",
+            "data-original", "data-srcset", "srcset",
+        ]
+        for attr in candidate_attrs:
+            value = img.get(attr)
+            if not value:
+                continue
+            # srcset / data-srcset peuvent contenir plusieurs URLs séparées
+            # par des virgules ("url1 1x, url2 2x") : on prend la première.
+            first_url = value.split(",")[0].strip().split(" ")[0].strip()
+            if not first_url or first_url.startswith("data:"):
+                continue  # image en base64 (souvent un pixel de remplacement)
+            affiche_url = urljoin(ALLOCINE_BASE_URL, first_url)
+            break
 
     # Récupère le texte du bloc : tout ce qui suit ce titre dans le document,
     # jusqu'au texte du titre suivant (ou toute la fin si c'est le dernier film).

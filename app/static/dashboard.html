@@ -275,7 +275,7 @@ function renderFilmCard(film) {
     || '<span class="badge">Pas de note</span>';
 
   const poster = film.affiche_url
-    ? `<img class="poster" src="${escapeHtml(film.affiche_url)}" alt="Affiche de ${escapeHtml(film.titre)}" loading="lazy">`
+    ? `<img class="poster" src="${escapeHtml(film.affiche_url)}" alt="Affiche de ${escapeHtml(film.titre)}" loading="lazy" onerror="this.outerHTML='<div class=&quot;poster&quot;></div>'">`
     : `<div class="poster"></div>`;
 
   const titreHtml = notes.url_fiche
