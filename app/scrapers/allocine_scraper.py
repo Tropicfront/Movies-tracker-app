@@ -49,12 +49,16 @@ def _save_debug_html(html: str, name: str) -> None:
         logger.warning("Impossible de sauvegarder le HTML de debug: %s", e)
 
 
-def _fetch_html(url: str, params: dict | None = None) -> str:
+def _fetch_html(url: str, params: dict | None = None, debug_name: str = "erreur") -> str:
     """
     Requête GET avec gestion du 429 (Too Many Requests) : nouvelle tentative
     après une pause, en respectant l'en-tête Retry-After du serveur s'il est
     présent, sinon une pause par défaut. Utile notamment lors de la synchro
     Jellyfin, qui peut interroger AlloCiné pour de nombreux titres à la suite.
+
+    En cas d'erreur HTTP (quel que soit le code, y compris 410 Gone), le
+    corps de la réponse est sauvegardé en HTML de debug avant de lever
+    l'exception, pour pouvoir diagnostiquer précisément la cause.
     """
     max_retries = 3
     for attempt in range(1, max_retries + 1):
@@ -72,13 +76,19 @@ def _fetch_html(url: str, params: dict | None = None) -> str:
             )
             time.sleep(wait)
             continue
+        if not resp.ok:
+            _save_debug_html(resp.text, f"{debug_name}_{resp.status_code}")
+            logger.warning(
+                "Réponse HTTP %s pour %s (taille du corps: %d octets) — HTML de debug sauvegardé",
+                resp.status_code, url, len(resp.text),
+            )
         resp.raise_for_status()
         return resp.text
 
 
 def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
     """Recherche le titre sur AlloCiné et retourne l'URL de la première fiche pertinente."""
-    html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre})
+    html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre}, debug_name=f"recherche_{titre}")
     _save_debug_html(html, f"recherche_{titre}")
     soup = BeautifulSoup(html, "lxml")
 
@@ -150,7 +160,7 @@ def get_note_allocine(titre: str, type_: str = "film") -> NoteAlloCine:
             logger.warning("Aucune fiche AlloCiné trouvée pour '%s'", titre)
             return NoteAlloCine(trouve=False)
 
-        html = _fetch_html(fiche_url)
+        html = _fetch_html(fiche_url, debug_name=f"fiche_{titre}")
         _save_debug_html(html, f"fiche_{titre}")
         soup = BeautifulSoup(html, "lxml")
 
