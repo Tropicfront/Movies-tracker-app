@@ -6,7 +6,10 @@ import os
 
 # --- AlloCiné ---
 ALLOCINE_BASE_URL = "https://www.allocine.fr"
-ALLOCINE_SEARCH_URL = f"{ALLOCINE_BASE_URL}/recherche/1/"
+# Ancienne URL "/recherche/1/" retirée par AlloCiné (410 Gone confirmé le
+# 27/09/2026, page d'erreur Apache standard). Nouvelle URL confirmée par un
+# test manuel dans un vrai navigateur : "/rechercher/" (verbe, pas nom).
+ALLOCINE_SEARCH_URL = f"{ALLOCINE_BASE_URL}/rechercher/"
 
 # Code "salle" AlloCiné du Pathé Toulouse Wilson (visible dans l'URL de la
 # page du cinéma : /seance/salle_gen_csalle=P0057.html). Cette page liste en
