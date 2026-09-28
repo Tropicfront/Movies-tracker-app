@@ -8,7 +8,7 @@ import re
 import time
 import unicodedata
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Lock, Thread
 from typing import List, Optional
 
 from app.config import ALLOCINE_SYNC_DELAY_SECONDS
@@ -23,6 +23,7 @@ _lock = Lock()
 _films: List[Film] = []
 _statut = StatutScraping()
 _statut_sync_jellyfin = StatutSyncJellyfin()
+_sync_running = False  # protégé par _lock : évite deux synchros simultanées
 
 # Conversion note AlloCiné (0-5) -> échelles Jellyfin
 # CommunityRating: 0-10 (comme IMDb)   -> note spectateurs x2
@@ -103,30 +104,66 @@ def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
     AlloCiné correspondante pour chaque titre, et met à jour CommunityRating
     (note spectateurs) et CriticRating (note presse) dans Jellyfin.
 
+    Bloquant (peut durer plusieurs minutes) : pour un usage depuis l'API ou au
+    démarrage, préférer start_jellyfin_notes_sync_async(). Une seule synchro
+    à la fois : si une est déjà en cours, retourne simplement son statut.
+    La progression est publiée en direct (en_cours / nb_traites).
+
     Ne lève jamais d'exception : les erreurs sont capturées et reportées.
     """
+    global _statut_sync_jellyfin, _sync_running
+
+    with _lock:
+        if _sync_running:
+            logger.info("Synchro Jellyfin déjà en cours : nouvelle demande ignorée")
+            return _statut_sync_jellyfin
+        _sync_running = True
+
+    try:
+        return _run_jellyfin_notes_sync_locked()
+    finally:
+        with _lock:
+            _sync_running = False
+
+
+def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
     global _statut_sync_jellyfin
     erreurs: List[str] = []
     nb_appliquees = 0
     nb_non_trouves = 0
+    nb_traites = 0
+
+    def publish(items_count: int, en_cours: bool, derniere_sync: Optional[str] = None) -> StatutSyncJellyfin:
+        global _statut_sync_jellyfin
+        statut = StatutSyncJellyfin(
+            en_cours=en_cours,
+            nb_traites=nb_traites,
+            derniere_sync=derniere_sync,
+            nb_items_bibliotheque=items_count,
+            nb_notes_appliquees=nb_appliquees,
+            nb_non_trouves=nb_non_trouves,
+            erreurs=list(erreurs),
+        )
+        with _lock:
+            _statut_sync_jellyfin = statut
+        return statut
 
     try:
         items = jellyfin_client.get_library_items()
     except Exception as e:
         logger.exception("Échec de la récupération de la bibliothèque Jellyfin")
-        statut = StatutSyncJellyfin(
-            derniere_sync=datetime.now(timezone.utc).isoformat(),
-            erreurs=[f"Jellyfin (lecture bibliothèque): {e}"],
-        )
-        with _lock:
-            _statut_sync_jellyfin = statut
-        return statut
+        erreurs.append(f"Jellyfin (lecture bibliothèque): {e}")
+        return publish(0, False, datetime.now(timezone.utc).isoformat())
+
+    publish(len(items), True)  # la progression devient visible tout de suite
+    logger.info("Synchro Jellyfin démarrée : %d titre(s) à traiter", len(items))
 
     for i, item in enumerate(items):
         titre = item.get("Name")
         item_id = item.get("Id")
         item_type = item.get("Type")  # "Movie" ou "Series"
         if not titre or not item_id:
+            nb_traites += 1
             continue
 
         # Pause entre chaque titre : la synchro peut interroger AlloCiné pour
@@ -142,52 +179,60 @@ def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
         except Exception as e:
             logger.exception("Erreur récupération note AlloCiné pour '%s'", titre)
             erreurs.append(f"AlloCiné ({titre}): {e}")
-            continue
-
-        if not note.trouve:
-            nb_non_trouves += 1
+            nb_traites += 1
+            publish(len(items), True)
             continue
 
         community_rating = (
             _note_to_community_rating(note.note_spectateurs)
-            if note.note_spectateurs is not None else None
+            if note.trouve and note.note_spectateurs is not None else None
         )
         critic_rating = (
             _note_to_critic_rating(note.note_presse)
-            if note.note_presse is not None else None
+            if note.trouve and note.note_presse is not None else None
         )
 
         if community_rating is None and critic_rating is None:
             nb_non_trouves += 1
-            continue
+        else:
+            try:
+                ok = jellyfin_client.update_item_ratings(
+                    item_id, community_rating=community_rating, critic_rating=critic_rating
+                )
+                if ok:
+                    nb_appliquees += 1
+                else:
+                    erreurs.append(f"Jellyfin (mise à jour '{titre}'): échec API")
+            except Exception as e:
+                logger.exception("Erreur mise à jour Jellyfin pour '%s'", titre)
+                erreurs.append(f"Jellyfin (mise à jour '{titre}'): {e}")
 
-        try:
-            ok = jellyfin_client.update_item_ratings(
-                item_id, community_rating=community_rating, critic_rating=critic_rating
-            )
-            if ok:
-                nb_appliquees += 1
-            else:
-                erreurs.append(f"Jellyfin (mise à jour '{titre}'): échec API")
-        except Exception as e:
-            logger.exception("Erreur mise à jour Jellyfin pour '%s'", titre)
-            erreurs.append(f"Jellyfin (mise à jour '{titre}'): {e}")
+        nb_traites += 1
+        publish(len(items), True)
 
-    statut = StatutSyncJellyfin(
-        derniere_sync=datetime.now(timezone.utc).isoformat(),
-        nb_items_bibliotheque=len(items),
-        nb_notes_appliquees=nb_appliquees,
-        nb_non_trouves=nb_non_trouves,
-        erreurs=erreurs,
-    )
-    with _lock:
-        _statut_sync_jellyfin = statut
-
+    statut = publish(len(items), False, datetime.now(timezone.utc).isoformat())
     logger.info(
         "Sync Jellyfin terminée: %d items, %d notes appliquées, %d non trouvés, %d erreur(s)",
         len(items), nb_appliquees, nb_non_trouves, len(erreurs),
     )
     return statut
+
+
+def start_jellyfin_notes_sync_async() -> StatutSyncJellyfin:
+    """
+    Lance la synchro Jellyfin dans un thread d'arrière-plan et rend la main
+    immédiatement (l'API/la page web restent utilisables pendant que la synchro
+    tourne). Si une synchro est déjà en cours, ne fait rien. Retourne le statut
+    courant ; suivre l'avancement via GET /jellyfin/statut.
+    """
+    with _lock:
+        if _sync_running:
+            return _statut_sync_jellyfin
+    Thread(target=run_jellyfin_notes_sync, name="jellyfin-sync", daemon=True).start()
+    with _lock:
+        # Marque tout de suite "en cours" pour que le premier affichage soit juste
+        # (le thread peut mettre quelques ms à démarrer).
+        return _statut_sync_jellyfin.model_copy(update={"en_cours": True})
 
 
 def get_statut_sync_jellyfin() -> StatutSyncJellyfin:

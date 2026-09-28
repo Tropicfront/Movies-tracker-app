@@ -27,6 +27,7 @@ import os
 import re
 import time
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Optional
 from urllib.parse import quote
 
@@ -41,6 +42,7 @@ from app.config import (
     DEBUG_SAVE_HTML,
     DEBUG_DATA_DIR,
 )
+from app.matching import normalize_title
 from app.models import NoteAlloCine
 
 logger = logging.getLogger("allocine_scraper")
@@ -124,39 +126,58 @@ def _decode_allocine_class_link(class_value) -> Optional[str]:
 
 def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
     """
-    Recherche le titre sur AlloCiné et retourne l'URL de la première fiche
+    Recherche le titre sur AlloCiné et retourne l'URL de la fiche la plus
     pertinente. Les liens de la page de résultats ne sont pas de simples
     <a href> mais encodés dans l'attribut class (voir l'explication en tête
     de fichier) — on décode donc chaque candidat plutôt que de lire un href.
+
+    Garde-fous :
+    - Les colonnes latérales (<aside>, ex. widget "Top films au box office"),
+      l'en-tête et le pied de page sont ignorés : ils contiennent eux aussi des
+      liens de fiches (présents sur TOUTES les pages de recherche) qui
+      donneraient de fausses correspondances si aucun vrai résultat n'existe.
+    - Le type demandé (film/série) est prioritaire.
+    - Parmi les candidats du bon type, on garde le premier résultat (le
+      classement AlloCiné est généralement bon, y compris quand le titre
+      Jellyfin est en anglais), sauf si un autre candidat a un titre quasi
+      identique à celui recherché.
     """
     html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre}, debug_name=f"recherche_{titre}")
     _save_debug_html(html, f"recherche_{titre}")
     soup = BeautifulSoup(html, "lxml")
 
+    for zone in soup.select("aside, footer, header, nav"):
+        zone.decompose()
+
     path_prefix = "/film/fichefilm" if type_ == "film" else "/series/ficheserie"
 
-    candidates: list[str] = []
+    candidates: list[tuple[str, str]] = []  # (chemin, titre affiché)
+    seen_paths: set[str] = set()
     for el in soup.select(".meta-title-link, .list-entity-title-link, a[href]"):
         # Repli inclus : si AlloCiné revient un jour à de vrais <a href>,
         # cette même boucle les capte aussi via le sélecteur "a[href]".
-        href = el.get("href")
-        if href:
-            candidates.append(href)
+        path = el.get("href") or _decode_allocine_class_link(el.get("class"))
+        if not path or path in seen_paths:
             continue
-        decoded = _decode_allocine_class_link(el.get("class"))
-        if decoded:
-            candidates.append(decoded)
+        if "fichefilm" not in path and "ficheserie" not in path:
+            continue  # actus, vidéos, personnes, liens de service...
+        seen_paths.add(path)
+        candidates.append((path, el.get_text(strip=True)))
 
-    # Priorité au type demandé (film ou série), sinon on prend le premier
-    # résultat de fiche trouvé, quel que soit son type.
-    link_path = next((c for c in candidates if path_prefix in c), None)
-    if link_path is None:
-        link_path = next(
-            (c for c in candidates if "fichefilm" in c or "ficheserie" in c), None
-        )
-
-    if not link_path:
+    if not candidates:
         return None
+
+    same_type = [c for c in candidates if path_prefix in c[0]]
+    pool = same_type or candidates  # repli : n'importe quel type de fiche
+
+    wanted = normalize_title(titre)
+    chosen = pool[0]
+    for path, shown_title in pool:
+        if SequenceMatcher(None, wanted, normalize_title(shown_title)).ratio() >= 0.9:
+            chosen = (path, shown_title)
+            break
+
+    link_path = chosen[0]
     if link_path.startswith("http"):
         return link_path
     return f"{ALLOCINE_BASE_URL}{link_path}"
@@ -217,6 +238,18 @@ def get_note_allocine(titre: str, type_: str = "film") -> NoteAlloCine:
         soup = BeautifulSoup(html, "lxml")
 
         note_presse, note_spectateurs = _extract_notes(soup)
+
+        if note_presse is None and note_spectateurs is None:
+            logger.warning(
+                "Fiche trouvée pour '%s' (%s) mais AUCUNE note extraite : la structure "
+                "de la fiche a peut-être changé (voir le fichier allocine_fiche_* dans /app/data).",
+                titre, fiche_url,
+            )
+        else:
+            logger.info(
+                "Notes AlloCiné pour '%s' : presse=%s, spectateurs=%s (%s)",
+                titre, note_presse, note_spectateurs, fiche_url,
+            )
 
         return NoteAlloCine(
             note_presse=note_presse,

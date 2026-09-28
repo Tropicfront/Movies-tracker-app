@@ -330,16 +330,36 @@ async function loadStatus() {
 async function loadJellyfinStatus() {
   try {
     const s = await fetchJSON('/jellyfin/statut');
-    if (s.derniere_sync) {
-      document.getElementById('btn-jellyfin').style.display = 'inline-flex';
-      const bar = document.getElementById('status-bar');
-      bar.innerHTML += ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
+    const btn = document.getElementById('btn-jellyfin');
+    const bar = document.getElementById('status-bar');
+    btn.style.display = 'inline-flex';
+    if (s.en_cours) {
+      btn.disabled = true;
+      btn.textContent = `🔄 Synchro en cours ${s.nb_traites}/${s.nb_items_bibliotheque}…`;
+      bar.innerHTML += ` · Jellyfin : <b>synchronisation en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
     } else {
-      // Pas encore synchronisé, mais on affiche quand même le bouton pour permettre un premier essai manuel
-      document.getElementById('btn-jellyfin').style.display = 'inline-flex';
+      btn.disabled = false;
+      btn.textContent = '🔄 Synchroniser Jellyfin';
+      if (s.derniere_sync) {
+        bar.innerHTML += ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
+      }
     }
+    return s;
   } catch {
     // Jellyfin non configuré ou endpoint indisponible : on n'affiche pas le bouton
+    return null;
+  }
+}
+
+// Tant qu'une synchro Jellyfin tourne en arrière-plan, on rafraîchit le statut
+// toutes les 3 s (la synchro peut durer plusieurs minutes).
+let jellyfinPollTimer = null;
+async function pollJellyfin() {
+  clearTimeout(jellyfinPollTimer);
+  await loadStatus();
+  const s = await loadJellyfinStatus();
+  if (s && s.en_cours) {
+    jellyfinPollTimer = setTimeout(pollJellyfin, 3000);
   }
 }
 
@@ -361,21 +381,20 @@ async function refresh() {
 async function syncJellyfin() {
   const btn = document.getElementById('btn-jellyfin');
   btn.disabled = true;
-  btn.textContent = '🔄 Synchronisation…';
+  btn.textContent = '🔄 Démarrage…';
   try {
+    // L'API répond immédiatement : la synchro tourne en arrière-plan.
     await fetchJSON('/jellyfin/sync-notes', { method: 'POST' });
-    await loadJellyfinStatus();
+    await pollJellyfin();
   } catch (e) {
     alert('Échec de la synchronisation Jellyfin : ' + e.message);
-  } finally {
     btn.disabled = false;
     btn.textContent = '🔄 Synchroniser Jellyfin';
   }
 }
 
 loadFilms();
-loadStatus();
-loadJellyfinStatus();
+pollJellyfin();
 </script>
 
 </body>

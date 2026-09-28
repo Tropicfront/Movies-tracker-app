@@ -13,6 +13,7 @@ services:
       - JELLYFIN_URL=${JELLYFIN_URL:-}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       # - JELLYFIN_USER_ID=                       # optionnel, seulement si nécessaire
+      # - 'JELLYFIN_IGNORE_REGEX=\s[-–—]\s*Saga\s*$$'  # défaut ; éléments Jellyfin ignorés ($$ = $ dans compose)
       - TITLE_ALIASES_PATH=/app/data/title_aliases.json
       - TITLE_MATCH_THRESHOLD=0.85
       - CALENDAR_NAME=Pathé Toulouse Wilson (ma bibliothèque Jellyfin)

@@ -70,6 +70,8 @@ La mise à jour récupère toujours l'item Jellyfin complet avant de le renvoyer
 deux champs de note modifiés (pour éviter un bug connu de Jellyfin où un envoi partiel peut
 corrompre les métadonnées d'un item).
 
+> **Synchro Jellyfin en arrière-plan** : elle dure plusieurs minutes (une requête AlloCiné par titre, avec pause). Elle ne bloque donc ni le démarrage ni la page web : l'API et le dashboard répondent immédiatement, et l'avancement est visible sur le dashboard ou via `GET /jellyfin/statut` (`en_cours`, `nb_traites`, `nb_items_bibliotheque`). `POST /jellyfin/sync-notes` rend la main tout de suite et ne lance pas de seconde synchro si une tourne déjà.
+
 ### Déboguer Jellyfin
 
 - Erreurs 401/403 sur `POST /jellyfin/sync-notes` : vérifiez la clé API.
@@ -154,6 +156,7 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `TITLE_ALIASES_PATH` | `/app/data/title_aliases.json` | Fichier d'alias de titres AlloCiné ↔ Jellyfin |
 | `TITLE_MATCH_THRESHOLD` | `0.85` | Seuil de similarité (0-1) pour le rapprochement approximatif de titres |
 | `ALLOCINE_SYNC_DELAY_SECONDS` | `1.0` | Pause entre chaque titre lors de la synchro Jellyfin (évite les 429 AlloCiné sur les grosses bibliothèques) |
+| `JELLYFIN_IGNORE_REGEX` | `\s[-–—]\s*Saga\s*$` | Éléments Jellyfin ignorés (regex, insensible à la casse, appliquée au nom). Par défaut les regroupements « … - Saga » ; les collections (BoxSet) sont toujours exclues. Vide = désactivé |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 
 ## Structure du projet

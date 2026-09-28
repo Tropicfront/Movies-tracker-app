@@ -22,6 +22,8 @@ un rescan), on récupère systématiquement l'item complet avant de le renvoyer
 avec uniquement les deux champs de note modifiés.
 """
 import logging
+import re
+from collections import Counter
 from typing import List, Optional
 
 import requests
@@ -30,6 +32,7 @@ from app.config import (
     JELLYFIN_URL,
     JELLYFIN_API_KEY,
     JELLYFIN_USER_ID,
+    JELLYFIN_IGNORE_REGEX,
     REQUEST_TIMEOUT,
 )
 
@@ -67,12 +70,18 @@ def get_library_items() -> List[dict]:
     """
     Récupère les films et séries de la bibliothèque Jellyfin.
     Retourne une liste de dicts avec au moins: Id, Name, Type.
+
+    Les collections (BoxSet) et les éléments dont le nom correspond à
+    JELLYFIN_IGNORE_REGEX (par défaut les regroupements "… - Saga") sont
+    exclus : ils n'ont pas de fiche AlloCiné précise et recevraient une note
+    d'un film au hasard.
     """
     if not JELLYFIN_URL or not JELLYFIN_API_KEY:
         raise JellyfinError("JELLYFIN_URL / JELLYFIN_API_KEY non configurés")
 
     params = {
         "IncludeItemTypes": "Movie,Series",
+        "ExcludeItemTypes": "BoxSet",
         "Recursive": "true",
         "Fields": "ProviderIds",
     }
@@ -80,8 +89,27 @@ def get_library_items() -> List[dict]:
         _items_base_url(), headers=_headers(), params=params, timeout=REQUEST_TIMEOUT
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data.get("Items", [])
+    items = resp.json().get("Items", [])
+
+    ignore = re.compile(JELLYFIN_IGNORE_REGEX, re.IGNORECASE) if JELLYFIN_IGNORE_REGEX else None
+    kept: List[dict] = []
+    ignored: List[dict] = []
+    for item in items:
+        name = item.get("Name") or ""
+        if item.get("Type") not in ("Movie", "Series") or (ignore and ignore.search(name)):
+            ignored.append(item)
+        else:
+            kept.append(item)
+
+    if ignored:
+        types = dict(Counter(i.get("Type") for i in ignored))
+        logger.info(
+            "Bibliothèque Jellyfin : %d élément(s) ignoré(s) (collections / motif %r), types vus : %s. "
+            "Exemples : %s",
+            len(ignored), JELLYFIN_IGNORE_REGEX, types,
+            ", ".join(repr(i.get("Name")) for i in ignored[:5]),
+        )
+    return kept
 
 
 def _get_full_item(item_id: str) -> Optional[dict]:

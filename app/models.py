@@ -37,6 +37,8 @@ class StatutScraping(BaseModel):
 
 
 class StatutSyncJellyfin(BaseModel):
+    en_cours: bool = False           # une synchro tourne actuellement en arrière-plan
+    nb_traites: int = 0              # titres déjà traités (progression)
     derniere_sync: Optional[str] = None
     nb_items_bibliotheque: int = 0
     nb_notes_appliquees: int = 0

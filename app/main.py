@@ -20,7 +20,7 @@ from app.storage import (
     get_all_films,
     get_film_by_slug,
     get_statut,
-    run_jellyfin_notes_sync,
+    start_jellyfin_notes_sync_async,
     get_statut_sync_jellyfin,
 )
 from app.calendar_builder import generate_calendar_ics
@@ -63,6 +63,8 @@ def dashboard() -> HTMLResponse:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    # 1) Récupération de la page salle AlloCiné : rapide (~1 s), faite ici pour
+    #    que les films soient disponibles dès que l'API répond.
     logger.info("Démarrage: lancement du scraping initial...")
     statut = run_scraping_pipeline()
     if statut.erreurs:
@@ -70,16 +72,16 @@ def on_startup() -> None:
     else:
         logger.info("Scraping initial terminé: %d films récupérés", statut.nb_films)
 
+    # 2) Synchro des notes vers Jellyfin : LONGUE (une requête AlloCiné par
+    #    titre de la bibliothèque, avec pause entre chaque). Lancée en arrière-
+    #    plan pour ne PAS bloquer le démarrage : sinon l'API et la page web
+    #    resteraient injoignables pendant toute la durée de la synchro.
     if jellyfin_configured():
-        logger.info("Jellyfin configuré: lancement de la synchronisation des notes AlloCiné...")
-        sync_statut = run_jellyfin_notes_sync()
-        if sync_statut.erreurs:
-            logger.warning("Sync Jellyfin terminée avec des erreurs: %s", sync_statut.erreurs)
-        else:
-            logger.info(
-                "Sync Jellyfin terminée: %d/%d notes appliquées",
-                sync_statut.nb_notes_appliquees, sync_statut.nb_items_bibliotheque,
-            )
+        logger.info(
+            "Jellyfin configuré: synchronisation des notes AlloCiné lancée en arrière-plan "
+            "(progression : GET /jellyfin/statut)."
+        )
+        start_jellyfin_notes_sync_async()
     else:
         logger.info(
             "JELLYFIN_URL/JELLYFIN_API_KEY non configurés : synchronisation des notes "
@@ -147,13 +149,18 @@ def jellyfin_sync_notes() -> StatutSyncJellyfin:
     Nécessite JELLYFIN_URL et JELLYFIN_API_KEY configurés (variables d'env).
     Lancé automatiquement au démarrage du conteneur si ces variables sont
     définies ; cet endpoint permet de relancer la synchro manuellement.
+
+    La synchro dure plusieurs minutes : elle tourne en arrière-plan et cet
+    endpoint répond immédiatement. Suivre l'avancement via GET /jellyfin/statut
+    (champs en_cours / nb_traites / nb_items_bibliotheque). Si une synchro est
+    déjà en cours, aucune seconde synchro n'est lancée.
     """
     if not jellyfin_configured():
         raise HTTPException(
             status_code=400,
             detail="JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés (variables d'environnement).",
         )
-    return run_jellyfin_notes_sync()
+    return start_jellyfin_notes_sync_async()
 
 
 @app.get("/jellyfin/statut", response_model=StatutSyncJellyfin, tags=["Jellyfin"])

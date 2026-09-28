@@ -57,6 +57,12 @@ JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 # Laissez vide pour utiliser les endpoints génériques (recommandé en premier essai).
 JELLYFIN_USER_ID = os.getenv("JELLYFIN_USER_ID", "")
 
+# Éléments de la bibliothèque Jellyfin à ignorer lors de la synchro des notes
+# et du calendrier : les regroupements (ex. "Avengers - Saga", "300 - Saga")
+# ne correspondent à aucune fiche AlloCiné précise. Expression régulière
+# insensible à la casse appliquée au nom ; laisser vide pour désactiver.
+JELLYFIN_IGNORE_REGEX = os.getenv("JELLYFIN_IGNORE_REGEX", r"\s[-–—]\s*Saga\s*$")
+
 def jellyfin_configured() -> bool:
     return bool(JELLYFIN_URL and JELLYFIN_API_KEY)
 
