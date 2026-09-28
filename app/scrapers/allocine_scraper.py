@@ -43,6 +43,7 @@ from app.config import (
     DEBUG_DATA_DIR,
 )
 from app.matching import normalize_title
+from app.ratelimit import wait_for_slot
 from app.models import NoteAlloCine
 
 logger = logging.getLogger("allocine_scraper")
@@ -75,6 +76,7 @@ def _fetch_html(url: str, params: dict | None = None, debug_name: str = "erreur"
     """
     max_retries = 3
     for attempt in range(1, max_retries + 1):
+        wait_for_slot()  # limite globale de requêtes/seconde vers AlloCiné
         resp = requests.get(url, headers=DEFAULT_HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         if resp.status_code == 429 and attempt < max_retries:
             retry_after = resp.headers.get("Retry-After")
@@ -124,7 +126,47 @@ def _decode_allocine_class_link(class_value) -> Optional[str]:
     return None
 
 
-def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
+_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+
+def _years_in(text: str) -> list[int]:
+    return [int(y) for y in _YEAR_RE.findall(text or "")]
+
+
+def _card_years(el, candidate_ids: set) -> list[int]:
+    """
+    Années affichées sur la "carte" du résultat qui contient `el`.
+
+    La carte = le plus grand ancêtre de `el` qui ne contient AUCUN autre
+    résultat (sinon on mélangerait les années de résultats voisins). On lit
+    d'abord le bloc d'infos (date, durée, genres) ; à défaut, tout le texte de
+    la carte (le titre peut contenir l'année, ex. "(2012)").
+    """
+    def count_candidates(node) -> int:
+        return sum(1 for x in node.find_all(True) if id(x) in candidate_ids)
+
+    node = el
+    for _ in range(8):
+        parent = node.parent
+        if parent is None or parent.name in ("body", "html", "[document]"):
+            break
+        if count_candidates(parent) > 1:
+            break
+        node = parent
+
+    info_text = " ".join(x.get_text(" ") for x in node.select(".meta-body-info, .meta-body"))
+    years = _years_in(info_text)
+    if not years:
+        # Repli : texte de la carte SANS le synopsis (qui cite souvent d'autres
+        # années : "en 1968, un astronaute...") pour ne pas fausser la lecture.
+        text = node.get_text(" ")
+        for syn in node.select(".synopsis"):
+            text = text.replace(syn.get_text(" "), " ")
+        years = _years_in(text)
+    return sorted(set(years))
+
+
+def _find_fiche_url(titre: str, type_: str = "film", annee: Optional[int] = None) -> Optional[str]:
     """
     Recherche le titre sur AlloCiné et retourne l'URL de la fiche la plus
     pertinente. Les liens de la page de résultats ne sont pas de simples
@@ -137,10 +179,15 @@ def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
       liens de fiches (présents sur TOUTES les pages de recherche) qui
       donneraient de fausses correspondances si aucun vrai résultat n'existe.
     - Le type demandé (film/série) est prioritaire.
-    - Parmi les candidats du bon type, on garde le premier résultat (le
-      classement AlloCiné est généralement bon, y compris quand le titre
-      Jellyfin est en anglais), sauf si un autre candidat a un titre quasi
-      identique à celui recherché.
+    - Homonymes : plusieurs films portent souvent le même titre (ex. "Apocalypse
+      Now" 1979 de Coppola et un film de 1998). Si `annee` (année de production
+      dans Jellyfin) est fournie, on écarte les résultats dont l'année affichée
+      est connue et éloignée de plus d'1 an. Un résultat dont l'année est
+      illisible n'est JAMAIS écarté (les cartes d'animes, notamment, n'en ont
+      souvent pas) ; si tous seraient écartés, l'année est ignorée.
+    - Parmi les candidats restants, on garde le premier résultat (le classement
+      AlloCiné est généralement bon, y compris quand le titre Jellyfin est en
+      anglais), sauf si un autre candidat a un titre quasi identique.
     """
     html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre}, debug_name=f"recherche_{titre}")
     _save_debug_html(html, f"recherche_{titre}")
@@ -151,7 +198,7 @@ def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
 
     path_prefix = "/film/fichefilm" if type_ == "film" else "/series/ficheserie"
 
-    candidates: list[tuple[str, str]] = []  # (chemin, titre affiché)
+    found: list[tuple[str, str, object]] = []  # (chemin, titre affiché, élément)
     seen_paths: set[str] = set()
     for el in soup.select(".meta-title-link, .list-entity-title-link, a[href]"):
         # Repli inclus : si AlloCiné revient un jour à de vrais <a href>,
@@ -162,20 +209,42 @@ def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
         if "fichefilm" not in path and "ficheserie" not in path:
             continue  # actus, vidéos, personnes, liens de service...
         seen_paths.add(path)
-        candidates.append((path, el.get_text(strip=True)))
+        found.append((path, el.get_text(strip=True), el))
 
-    if not candidates:
+    if not found:
         return None
+
+    candidate_ids = {id(el) for _, _, el in found}
+    # (chemin, titre affiché, années lues sur la carte)
+    candidates = [(path, shown, _card_years(el, candidate_ids)) for path, shown, el in found]
 
     same_type = [c for c in candidates if path_prefix in c[0]]
     pool = same_type or candidates  # repli : n'importe quel type de fiche
 
+    year_note = ""
+    if annee:
+        def mismatch(c) -> bool:  # année connue ET différente : c'est un homonyme
+            return bool(c[2]) and not any(abs(y - annee) <= 1 for y in c[2])
+
+        kept = [c for c in pool if not mismatch(c)]
+        if not kept:
+            year_note = " [aucun résultat de cette année : année ignorée]"
+        elif len(kept) < len(pool):
+            pool = kept
+            year_note = " [homonymes d'une autre année écartés]"
+
     wanted = normalize_title(titre)
     chosen = pool[0]
-    for path, shown_title in pool:
-        if SequenceMatcher(None, wanted, normalize_title(shown_title)).ratio() >= 0.9:
-            chosen = (path, shown_title)
+    for cand in pool:
+        if SequenceMatcher(None, wanted, normalize_title(cand[1])).ratio() >= 0.9:
+            chosen = cand
             break
+
+    logger.info(
+        "Recherche %r%s -> %r %s parmi %d candidat(s)%s",
+        titre, f" ({annee})" if annee else "", chosen[1], chosen[2] or "(année inconnue)",
+        len(candidates), year_note,
+    )
 
     link_path = chosen[0]
     if link_path.startswith("http"):
@@ -219,16 +288,17 @@ def _extract_notes(soup: BeautifulSoup) -> tuple[Optional[float], Optional[float
     return note_presse, note_spectateurs
 
 
-def get_note_allocine(titre: str, type_: str = "film") -> NoteAlloCine:
+def get_note_allocine(titre: str, type_: str = "film", annee: Optional[int] = None) -> NoteAlloCine:
     """
     Récupère les notes AlloCiné (presse et spectateurs) pour un film ou une
     série, à partir de son titre.
 
     :param titre: Titre du film ou de la série
     :param type_: "film" ou "serie"
+    :param annee: année de production (ex. depuis Jellyfin) pour départager les homonymes
     """
     try:
-        fiche_url = _find_fiche_url(titre, type_)
+        fiche_url = _find_fiche_url(titre, type_, annee)
         if not fiche_url:
             logger.warning("Aucune fiche AlloCiné trouvée pour '%s'", titre)
             return NoteAlloCine(trouve=False)
@@ -241,8 +311,9 @@ def get_note_allocine(titre: str, type_: str = "film") -> NoteAlloCine:
 
         if note_presse is None and note_spectateurs is None:
             logger.warning(
-                "Fiche trouvée pour '%s' (%s) mais AUCUNE note extraite : la structure "
-                "de la fiche a peut-être changé (voir le fichier allocine_fiche_* dans /app/data).",
+                "Fiche trouvée pour '%s' (%s) mais aucune note extraite : soit AlloCiné n'en "
+                "publie pas encore pour ce titre (fréquent pour les titres confidentiels), soit la "
+                "structure de la fiche a changé (voir le fichier allocine_fiche_* dans /app/data).",
                 titre, fiche_url,
             )
         else:

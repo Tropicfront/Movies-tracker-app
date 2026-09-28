@@ -2,9 +2,32 @@
 Configuration centralisée de l'application.
 Modifiez ici les URLs si les sites changent de structure d'adresse.
 """
+import logging
 import os
 
 # --- AlloCiné ---
+
+def _env_float(name: str, default: float) -> float:
+    """
+    Lit un nombre décimal dans l'environnement. Une valeur absente, vide,
+    non numérique ou négative retombe sur la valeur par défaut (avec un
+    avertissement) au lieu de faire planter le conteneur au démarrage.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        value = -1.0
+    if value < 0:
+        logging.getLogger("config").warning(
+            "Valeur invalide pour %s=%r (attendu : nombre >= 0) : défaut %s utilisé.",
+            name, raw, default,
+        )
+        return default
+    return value
+
 ALLOCINE_BASE_URL = "https://www.allocine.fr"
 # Ancienne URL "/recherche/1/" retirée par AlloCiné (410 Gone confirmé le
 # 27/09/2026, page d'erreur Apache standard). Nouvelle URL confirmée par un
@@ -37,10 +60,16 @@ DEFAULT_HEADERS = {
 }
 REQUEST_TIMEOUT = 15  # secondes
 
-# Pause (en secondes) entre chaque titre lors de la synchro Jellyfin, pour
-# éviter de déclencher une limitation de débit (429) sur AlloCiné quand la
-# bibliothèque contient beaucoup de films/séries.
-ALLOCINE_SYNC_DELAY_SECONDS = float(os.getenv("ALLOCINE_SYNC_DELAY_SECONDS", "1.0"))
+# --- Politesse envers AlloCiné (évite les 429 et les blocages) ---
+# Nombre MAXIMAL de requêtes vers AlloCiné par seconde, toutes requêtes
+# confondues (recherche, fiche, page salle). 1 = une requête par seconde.
+# Accepte les décimales : 0.5 = une requête toutes les 2 s. 0 = pas de limite.
+ALLOCINE_REQUESTS_PER_SECOND = _env_float("ALLOCINE_REQUESTS_PER_SECOND", 1.0)
+
+# Pause supplémentaire (en secondes) entre chaque TITRE lors de la synchro
+# Jellyfin, en plus de la limite ci-dessus (un titre = 2 requêtes : recherche
+# + fiche). 0 = pas de pause supplémentaire.
+ALLOCINE_SYNC_DELAY_SECONDS = _env_float("ALLOCINE_SYNC_DELAY_SECONDS", 2.0)
 
 # --- Debug ---
 # Si activé, sauvegarde le HTML brut récupéré dans /app/data pour permettre

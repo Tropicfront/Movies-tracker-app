@@ -24,7 +24,11 @@ from app.storage import (
     get_statut_sync_jellyfin,
 )
 from app.calendar_builder import generate_calendar_ics
-from app.config import jellyfin_configured
+from app.config import (
+    ALLOCINE_REQUESTS_PER_SECOND,
+    ALLOCINE_SYNC_DELAY_SECONDS,
+    jellyfin_configured,
+)
 from fastapi import Response
 
 logging.basicConfig(
@@ -63,6 +67,14 @@ def dashboard() -> HTMLResponse:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    limite = (
+        f"{ALLOCINE_REQUESTS_PER_SECOND:g} requête(s)/seconde max"
+        if ALLOCINE_REQUESTS_PER_SECOND > 0 else "aucune limite de débit"
+    )
+    logger.info(
+        "Réglages AlloCiné : %s, pause de %gs entre chaque titre lors de la synchro Jellyfin.",
+        limite, ALLOCINE_SYNC_DELAY_SECONDS,
+    )
     # 1) Récupération de la page salle AlloCiné : rapide (~1 s), faite ici pour
     #    que les films soient disponibles dès que l'API répond.
     logger.info("Démarrage: lancement du scraping initial...")
@@ -130,13 +142,14 @@ def get_film(slug: str) -> Film:
 def allocine_note(
     titre: str = Query(..., description="Titre du film ou de la série"),
     type: str = Query("film", pattern="^(film|serie)$", description="'film' ou 'serie'"),
+    annee: Optional[int] = Query(None, description="Année de production (départage les homonymes)"),
 ) -> NoteAlloCine:
     """
     Endpoint générique pour récupérer la note AlloCiné (presse/spectateurs)
     de n'importe quel film ou série, sans passer par le Pathé Toulouse Wilson.
     Exemple: /allocine/note?titre=Dune%20Deuxième%20Partie&type=film
     """
-    return get_note_allocine(titre, type_=type)
+    return get_note_allocine(titre, type_=type, annee=annee)
 
 
 @app.post("/jellyfin/sync-notes", response_model=StatutSyncJellyfin, tags=["Jellyfin"])

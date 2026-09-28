@@ -9,6 +9,11 @@ services:
       - DEBUG_SAVE_HTML=true
       - DEBUG_DATA_DIR=/app/data
       # - ALLOCINE_SALLE_CODE=P0057                # code salle AlloCiné, à ajuster si besoin
+      # --- Politesse envers AlloCiné (évite les 429 et les blocages) ---
+      # Requêtes max par seconde, toutes requêtes AlloCiné confondues (0.5 = 1 toutes les 2 s, 0 = illimité)
+      - ALLOCINE_REQUESTS_PER_SECOND=${ALLOCINE_REQUESTS_PER_SECOND:-1}
+      # Pause en secondes entre chaque titre lors de la synchro Jellyfin (en plus de la limite ci-dessus)
+      - ALLOCINE_SYNC_DELAY_SECONDS=${ALLOCINE_SYNC_DELAY_SECONDS:-2}
       # --- Jellyfin (obligatoire pour la sync notes + le calendrier filtré) ---
       - JELLYFIN_URL=${JELLYFIN_URL:-}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
@@ -18,8 +23,13 @@ services:
       - TITLE_MATCH_THRESHOLD=0.85
       - CALENDAR_NAME=Pathé Toulouse Wilson (ma bibliothèque Jellyfin)
     volumes:
-      - ./data:/app/data   # HTML de debug accessible depuis l'hôte
+      - movies_tracker_data:/app/data   # volume nommé : visible dans Portainer > Volumes
     dns:
       - 1.1.1.1
       - 8.8.8.8
     restart: unless-stopped
+
+volumes:
+  movies_tracker_data:
+    name: movies_tracker_data   # nom fixe (sinon Portainer/compose le préfixe du nom de la stack)
+    driver: local

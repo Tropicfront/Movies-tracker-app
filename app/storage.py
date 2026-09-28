@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from threading import Lock, Thread
 from typing import List, Optional
 
-from app.config import ALLOCINE_SYNC_DELAY_SECONDS
+from app.config import ALLOCINE_REQUESTS_PER_SECOND, ALLOCINE_SYNC_DELAY_SECONDS
 from app.models import Film, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_theater_scraper import scrape_allocine_theater
 from app.scrapers.allocine_scraper import get_note_allocine
@@ -156,7 +156,13 @@ def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
         return publish(0, False, datetime.now(timezone.utc).isoformat())
 
     publish(len(items), True)  # la progression devient visible tout de suite
-    logger.info("Synchro Jellyfin démarrée : %d titre(s) à traiter", len(items))
+    # Un titre = 2 requêtes (recherche + fiche), espacées par la limite de débit,
+    # puis la pause entre titres. Estimation basse (hors temps de réponse réseau).
+    par_titre = ALLOCINE_SYNC_DELAY_SECONDS + (2.0 / ALLOCINE_REQUESTS_PER_SECOND if ALLOCINE_REQUESTS_PER_SECOND > 0 else 0.0)
+    logger.info(
+        "Synchro Jellyfin démarrée : %d titre(s) à traiter (durée minimale estimée : ~%.0f min)",
+        len(items), len(items) * par_titre / 60,
+    )
 
     for i, item in enumerate(items):
         titre = item.get("Name")
@@ -173,9 +179,12 @@ def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
             time.sleep(ALLOCINE_SYNC_DELAY_SECONDS)
 
         type_allocine = "film" if item_type == "Movie" else "serie"
+        # Année de production Jellyfin : sert à départager les homonymes côté AlloCiné
+        annee = item.get("ProductionYear")
+        annee = annee if isinstance(annee, int) else None
 
         try:
-            note = get_note_allocine(titre, type_=type_allocine)
+            note = get_note_allocine(titre, type_=type_allocine, annee=annee)
         except Exception as e:
             logger.exception("Erreur récupération note AlloCiné pour '%s'", titre)
             erreurs.append(f"AlloCiné ({titre}): {e}")
@@ -201,6 +210,10 @@ def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
                 )
                 if ok:
                     nb_appliquees += 1
+                    logger.info(
+                        "Jellyfin mis à jour : %r -> CommunityRating=%s, CriticRating=%s",
+                        titre, community_rating, critic_rating,
+                    )
                 else:
                     erreurs.append(f"Jellyfin (mise à jour '{titre}'): échec API")
             except Exception as e:

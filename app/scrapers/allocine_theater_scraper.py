@@ -42,6 +42,7 @@ from app.config import (
     DEBUG_SAVE_HTML,
     DEBUG_DATA_DIR,
 )
+from app.ratelimit import wait_for_slot
 from app.models import Film, Seance, NoteAlloCine
 
 logger = logging.getLogger("allocine_theater_scraper")
@@ -82,6 +83,7 @@ def _save_debug_html(html: str, name: str) -> None:
 
 
 def _fetch_html(url: str) -> str:
+    wait_for_slot()  # limite globale de requêtes/seconde vers AlloCiné
     resp = _session.get(url, timeout=REQUEST_TIMEOUT)
     if not resp.ok:
         _save_debug_html(resp.text, f"erreur_{resp.status_code}_allocine_salle")

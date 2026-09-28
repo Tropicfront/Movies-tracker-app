@@ -19,8 +19,8 @@ pathe.fr est protégé par **Akamai Bot Manager**, qui a résisté à toutes les
 ```bash
 cp .env.example .env
 # éditez .env : JELLYFIN_URL et JELLYFIN_API_KEY (Dashboard Jellyfin > Clés API)
-cp data/title_aliases.example.json data/title_aliases.json   # optionnel, voir plus bas
 docker compose up --build
+# optionnel : fichier d'alias de titres, à copier dans le volume (voir « Volume de données » plus bas)
 ```
 
 L'application est disponible sur `http://localhost:8095` (page web) et `http://localhost:8095/docs` (documentation API interactive).
@@ -107,7 +107,9 @@ casse, ponctuation ignorés). Pour les titres réellement différents d'une lang
 (ex. "Dune : Deuxième Partie" vs "Dune: Part Two"), utilisez le fichier d'alias éditable à chaud :
 
 ```bash
-cp data/title_aliases.example.json data/title_aliases.json
+# le dossier /app/data du conteneur est un volume nommé : on y copie le fichier avec docker cp
+cp data/title_aliases.example.json title_aliases.json   # puis éditez-le
+docker cp title_aliases.json movies_tracker:/app/data/title_aliases.json
 ```
 ```json
 {
@@ -122,7 +124,7 @@ Ce fichier est relu à chaque génération du calendrier : pas besoin de redéma
 Le scraping AlloCiné a été testé avec des données réalistes reconstruites à partir de la vraie
 page, mais **pas contre le site en conditions réelles prolongées**. Si `/films` renvoie une liste
 vide ou incomplète, activez `DEBUG_SAVE_HTML=true` (déjà activé par défaut) et inspectez le fichier
-HTML sauvegardé dans `./data`.
+HTML sauvegardé dans le volume `movies_tracker_data` (voir « Volume de données »).
 
 Consultez les conditions d'utilisation d'AlloCiné : ce projet est prévu pour un usage
 personnel/non commercial, avec une fréquence de scraping raisonnable (une fois au démarrage par défaut).
@@ -131,11 +133,42 @@ personnel/non commercial, avec une fréquence de scraping raisonnable (une fois 
 sélectionné (aujourd'hui par défaut). Un sélecteur de date existe sur le site, mais son paramètre
 d'URL exact n'a pas été identifié.
 
+## Débit vers AlloCiné et durée de la synchro
+
+Deux réglages complémentaires (dans `docker-compose.yml`, surchargeables via `.env` ou les variables
+de la stack Portainer) :
+
+- `ALLOCINE_REQUESTS_PER_SECOND` (défaut `1`) : plafond global, appliqué à **toutes** les requêtes
+  vers AlloCiné, y compris les nouvelles tentatives après un 429.
+- `ALLOCINE_SYNC_DELAY_SECONDS` (défaut `2`) : pause en plus entre deux titres de la bibliothèque.
+
+Un titre = 2 requêtes (recherche + fiche). Avec les défauts, comptez donc **environ 4 s par titre**
+(2 s pour les 2 requêtes + 2 s de pause) : ~20 minutes pour 300 titres. Le log de démarrage de la
+synchro affiche cette estimation minimale. La synchro tourne en arrière-plan : la page reste utilisable.
+Une valeur invalide (texte, négatif) est ignorée avec un avertissement dans les logs et le défaut est utilisé.
+
+## Volume de données
+
+Les données du conteneur (`/app/data` : HTML de debug, fichier d'alias de titres) sont stockées dans un
+**volume Docker nommé** `movies_tracker_data`, visible dans Portainer > Volumes (le nom est fixé pour ne pas
+être préfixé par le nom de la stack).
+
+Contrairement à un dossier `./data` monté depuis l'hôte, ce volume n'est pas directement éditable depuis
+votre machine. Pour y déposer un fichier d'alias, ou en récupérer un :
+
+```bash
+docker cp title_aliases.json movies_tracker:/app/data/title_aliases.json   # déposer
+docker cp movies_tracker:/app/data/title_aliases.json .                    # récupérer
+```
+
+Le volume survit à `docker compose down` et aux reconstructions d'image ; seul `docker compose down -v`
+(ou sa suppression dans Portainer) l'efface.
+
 ## Déboguer le scraping AlloCiné
 
 Si `/films` renvoie une liste vide ou incomplète :
 
-1. Le HTML brut récupéré est automatiquement sauvegardé dans `./data` (monté depuis le conteneur).
+1. Le HTML brut récupéré est automatiquement sauvegardé dans le volume `movies_tracker_data` (`/app/data` dans le conteneur).
 2. Ouvrez le fichier `allocine_salle_pathe_toulouse_wilson_*.html` pour identifier la structure
    réelle si elle a changé.
 3. Ajustez les expressions régulières et sélecteurs dans
@@ -155,7 +188,8 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `JELLYFIN_USER_ID` | *(vide)* | Optionnel, voir [Déboguer Jellyfin](#déboguer-jellyfin) |
 | `TITLE_ALIASES_PATH` | `/app/data/title_aliases.json` | Fichier d'alias de titres AlloCiné ↔ Jellyfin |
 | `TITLE_MATCH_THRESHOLD` | `0.85` | Seuil de similarité (0-1) pour le rapprochement approximatif de titres |
-| `ALLOCINE_SYNC_DELAY_SECONDS` | `1.0` | Pause entre chaque titre lors de la synchro Jellyfin (évite les 429 AlloCiné sur les grosses bibliothèques) |
+| `ALLOCINE_REQUESTS_PER_SECOND` | `1` | Nombre **maximal** de requêtes par seconde vers AlloCiné, toutes requêtes confondues (recherche, fiche, page salle). Décimales acceptées : `0.5` = une requête toutes les 2 s. `0` = pas de limite |
+| `ALLOCINE_SYNC_DELAY_SECONDS` | `2` | Pause supplémentaire entre chaque **titre** lors de la synchro Jellyfin, en plus de la limite ci-dessus (évite les 429 AlloCiné sur les grosses bibliothèques) |
 | `JELLYFIN_IGNORE_REGEX` | `\s[-–—]\s*Saga\s*$` | Éléments Jellyfin ignorés (regex, insensible à la casse, appliquée au nom). Par défaut les regroupements « … - Saga » ; les collections (BoxSet) sont toujours exclues. Vide = désactivé |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 

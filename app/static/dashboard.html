@@ -321,29 +321,40 @@ async function loadStatus() {
     } else {
       html += ` — <span class="ok">OK</span>`;
     }
-    bar.innerHTML = html;
+    bar.innerHTML = html + '<span id="jf-status">' + jellyfinStatusHtml(lastJellyfinStatus) + '</span>';
   } catch (e) {
     bar.textContent = 'Statut indisponible : ' + e.message;
   }
 }
 
+let lastJellyfinStatus = null;
+
+function jellyfinStatusHtml(s) {
+  if (!s) return '';
+  if (s.en_cours) {
+    return ` · Jellyfin : <b>synchronisation en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
+  }
+  if (s.derniere_sync) {
+    return ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
+  }
+  return '';
+}
+
 async function loadJellyfinStatus() {
   try {
     const s = await fetchJSON('/jellyfin/statut');
+    lastJellyfinStatus = s;
     const btn = document.getElementById('btn-jellyfin');
-    const bar = document.getElementById('status-bar');
     btn.style.display = 'inline-flex';
     if (s.en_cours) {
       btn.disabled = true;
       btn.textContent = `🔄 Synchro en cours ${s.nb_traites}/${s.nb_items_bibliotheque}…`;
-      bar.innerHTML += ` · Jellyfin : <b>synchronisation en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
     } else {
       btn.disabled = false;
       btn.textContent = '🔄 Synchroniser Jellyfin';
-      if (s.derniere_sync) {
-        bar.innerHTML += ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
-      }
     }
+    const span = document.getElementById('jf-status');
+    if (span) span.innerHTML = jellyfinStatusHtml(s);
     return s;
   } catch {
     // Jellyfin non configuré ou endpoint indisponible : on n'affiche pas le bouton
@@ -351,12 +362,11 @@ async function loadJellyfinStatus() {
   }
 }
 
-// Tant qu'une synchro Jellyfin tourne en arrière-plan, on rafraîchit le statut
-// toutes les 3 s (la synchro peut durer plusieurs minutes).
+// Tant qu'une synchro Jellyfin tourne en arrière-plan, on rafraîchit sa
+// progression toutes les 3 s (une seule requête : /jellyfin/statut).
 let jellyfinPollTimer = null;
 async function pollJellyfin() {
   clearTimeout(jellyfinPollTimer);
-  await loadStatus();
   const s = await loadJellyfinStatus();
   if (s && s.en_cours) {
     jellyfinPollTimer = setTimeout(pollJellyfin, 3000);
@@ -394,7 +404,7 @@ async function syncJellyfin() {
 }
 
 loadFilms();
-pollJellyfin();
+loadStatus().then(pollJellyfin);
 </script>
 
 </body>
