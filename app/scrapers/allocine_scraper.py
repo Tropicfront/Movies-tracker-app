@@ -3,14 +3,25 @@ Scraper AlloCiné — récupère uniquement les notes (presse / spectateurs)
 pour un film ou une série, à partir de son titre.
 
 Fonctionnement :
-1. Recherche du titre via la page de recherche AlloCiné.
-2. Récupération du premier résultat pertinent (lien /film/... ou /series/...).
+1. Recherche du titre via la page de recherche AlloCiné (/rechercher/?q=...).
+2. Récupération du premier résultat pertinent (lien vers une fiche film/série).
 3. Ouverture de la fiche et extraction des notes presse/spectateurs.
 
-Comme pour le scraper Pathé, les sélecteurs CSS peuvent nécessiter un ajustement
-si AlloCiné change la structure de ses pages. Activez DEBUG_SAVE_HTML=true
-pour inspecter le HTML brut sauvegardé.
+Particularité constatée le 27/09/2026 : sur la page de résultats de recherche,
+AlloCiné n'utilise plus de balises <a href="..."> classiques pour les liens
+vers les fiches. Le lien est à la place encodé dans l'attribut class d'un
+<span> (ex: class="ACrL2ZACrpbG0vZmljaGVmaWxtX2dlbl9jZmlsbT0xMDAwMDE4ODU0Lmh0bWw=
+meta-title-link"). Décodage : retirer toutes les occurrences de "ACr" dans ce
+token de classe, puis décoder le résultat en base64 → on obtient le chemin
+relatif réel (ex: "/film/fichefilm_gen_cfilm=1000018854.html"). Voir
+_decode_allocine_class_link() ci-dessous. Cette obfuscation ne concerne (pour
+l'instant) que la page de recherche ; la page salle (allocine_theater_scraper.py)
+utilise toujours des <a href> classiques.
+
+Comme pour le reste du projet, si AlloCiné change encore sa structure,
+activez DEBUG_SAVE_HTML=true pour inspecter le HTML brut sauvegardé.
 """
+import base64
 import logging
 import os
 import re
@@ -86,28 +97,69 @@ def _fetch_html(url: str, params: dict | None = None, debug_name: str = "erreur"
         return resp.text
 
 
+def _decode_allocine_class_link(class_value) -> Optional[str]:
+    """
+    Décode un lien encodé dans un attribut class à la AlloCiné (voir
+    l'explication en tête de fichier). class_value peut être une liste
+    (BeautifulSoup) ou une chaîne. Retourne le chemin relatif décodé
+    (ex: "/film/fichefilm_gen_cfilm=1000018854.html") ou None si aucun des
+    tokens de la classe ne se décode en un chemin plausible.
+    """
+    if not class_value:
+        return None
+    tokens = class_value if isinstance(class_value, list) else class_value.split()
+    for token in tokens:
+        cleaned = token.replace("ACr", "")
+        if len(cleaned) < 8:  # trop court pour être notre encodage, on ignore
+            continue
+        padded = cleaned + "=" * (-len(cleaned) % 4)
+        try:
+            decoded = base64.b64decode(padded, validate=False).decode("utf-8")
+        except Exception:
+            continue
+        if decoded.startswith("/"):
+            return decoded
+    return None
+
+
 def _find_fiche_url(titre: str, type_: str = "film") -> Optional[str]:
-    """Recherche le titre sur AlloCiné et retourne l'URL de la première fiche pertinente."""
+    """
+    Recherche le titre sur AlloCiné et retourne l'URL de la première fiche
+    pertinente. Les liens de la page de résultats ne sont pas de simples
+    <a href> mais encodés dans l'attribut class (voir l'explication en tête
+    de fichier) — on décode donc chaque candidat plutôt que de lire un href.
+    """
     html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre}, debug_name=f"recherche_{titre}")
     _save_debug_html(html, f"recherche_{titre}")
     soup = BeautifulSoup(html, "lxml")
 
     path_prefix = "/film/fichefilm" if type_ == "film" else "/series/ficheserie"
 
-    link = soup.select_one(f"a[href*='{path_prefix}']")
-    if not link:
-        # Repli : accepter n'importe quel type de fiche (film ou série)
-        link = soup.select_one("a[href*='fichefilm'], a[href*='ficheserie']")
+    candidates: list[str] = []
+    for el in soup.select(".meta-title-link, .list-entity-title-link, a[href]"):
+        # Repli inclus : si AlloCiné revient un jour à de vrais <a href>,
+        # cette même boucle les capte aussi via le sélecteur "a[href]".
+        href = el.get("href")
+        if href:
+            candidates.append(href)
+            continue
+        decoded = _decode_allocine_class_link(el.get("class"))
+        if decoded:
+            candidates.append(decoded)
 
-    if not link:
-        return None
+    # Priorité au type demandé (film ou série), sinon on prend le premier
+    # résultat de fiche trouvé, quel que soit son type.
+    link_path = next((c for c in candidates if path_prefix in c), None)
+    if link_path is None:
+        link_path = next(
+            (c for c in candidates if "fichefilm" in c or "ficheserie" in c), None
+        )
 
-    href = link.get("href")
-    if not href:
+    if not link_path:
         return None
-    if href.startswith("http"):
-        return href
-    return f"{ALLOCINE_BASE_URL}{href}"
+    if link_path.startswith("http"):
+        return link_path
+    return f"{ALLOCINE_BASE_URL}{link_path}"
 
 
 def _extract_notes(soup: BeautifulSoup) -> tuple[Optional[float], Optional[float]]:
