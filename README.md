@@ -200,20 +200,27 @@ cours de diffusion...), et il serait dommage de rester bloqué sur un "non trouv
 ## Les notes n'apparaissent pas dans Jellyfin malgré des logs "mis à jour"
 
 Comportement Jellyfin connu et documenté (pas propre à ce projet) : une mise à jour de champ envoyée
-sans verrou explicite (`LockData`/`LockedFields`) est traitée comme une valeur "gérée par les
-fournisseurs de métadonnées", et écrasée au prochain scan de bibliothèque ou rafraîchissement — la
-requête répond 200 (d'où le "mis à jour" dans les logs), mais la valeur ne tient pas dans le temps.
+sans verrouiller l'item (`LockData`) est traitée comme une valeur "gérée par les fournisseurs de
+métadonnées", et écrasée au prochain scan de bibliothèque ou rafraîchissement — la requête répond 200
+(d'où le "mis à jour" dans les logs), mais la valeur ne tient pas dans le temps.
 
-C'est corrigé dans `app/jellyfin_client.py` : chaque mise à jour verrouille désormais explicitement les
-champs `CommunityRating`/`CriticRating` qu'elle modifie (sans toucher aux verrous que vous auriez posés
-vous-même sur d'autres champs). Si le problème persiste malgré cette version :
-1. Vérifiez sur la fiche du film dans Jellyfin (icône de verrou / Édition des métadonnées) que
-   `Community Rating` et `Critic Rating` apparaissent bien comme verrouillés.
-2. Si non : relancez une synchro (`force_refresh=true` pour être sûr de repasser sur ce titre) et
-   revérifiez juste après.
-3. Si le verrou est bien posé mais saute tout seul après un moment : c'est un bug Jellyfin connu sur
-   certaines versions 10.11.x (`LockedFields` peut se réinitialiser au redémarrage du serveur, ou ne pas
-   persister via l'API) — indépendant de ce projet, à signaler côté Jellyfin.
+Une première version de ce correctif ajoutait aussi `CommunityRating`/`CriticRating` à `LockedFields`
+(verrou par champ, plus précis). **Un vrai serveur Jellyfin (12.x) a rejeté cette requête avec une
+erreur 400** (`$.LockedFields[0]` invalide) : ces deux noms ne font pas partie de l'énumération que le
+serveur accepte pour ce champ. Corrigé : `app/jellyfin_client.py` verrouille désormais l'**item entier**
+(`LockData=true`) sans toucher à `LockedFields`, sans jamais y écrire ces deux noms — plus large (ça
+protège aussi les autres métadonnées de l'item contre un rafraîchissement automatique), mais c'est la
+seule approche qui fonctionne réellement contre cette version de l'API. Un verrou déjà posé par vous sur
+d'autres champs (`LockedFields` existant) est conservé tel quel, sans y toucher.
+
+**Si vous avez utilisé une version antérieure de ce projet**, relancez une synchro (le bouton
+🔁 Rescan complet, ou `force_refresh=true`) : les items dont la mise à jour a échoué en 400 n'ont reçu
+aucune note. Si le problème persiste malgré cette version :
+1. Vérifiez sur la fiche du film dans Jellyfin (icône de verrou / Édition des métadonnées) qu'il
+   apparaît bien comme verrouillé dans son ensemble.
+2. Si le verrou est bien posé mais saute tout seul après un moment : bug Jellyfin connu sur certaines
+   versions 10.11.x (`LockData`/`LockedFields` peuvent se réinitialiser au redémarrage du serveur, ou ne
+   pas persister via l'API) — indépendant de ce projet, à signaler côté Jellyfin.
 
 ## Volume de données
 

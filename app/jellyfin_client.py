@@ -138,14 +138,25 @@ def update_item_ratings(
     """
     Met à jour CommunityRating et/ou CriticRating pour un item Jellyfin.
 
-    Verrouille explicitement les champs modifiés (LockData=true,
-    LockedFields += le(s) champ(s) touché(s)) : sans ça, Jellyfin considère
-    ces champs comme gérés par ses propres fournisseurs de métadonnées et les
-    écrase à la prochaine actualisation (scan de bibliothèque, rafraîchissement
-    programmé...) — la mise à jour semble réussir sur le moment (la requête
-    répond 200) mais ne "tient" pas dans le temps. Comportement documenté et
-    largement rapporté côté Jellyfin, pas propre à ce projet. Un verrou déjà
-    posé par vous dans Jellyfin (sur d'autres champs) est conservé tel quel.
+    Verrouille l'item (LockData=true) pour que Jellyfin ne considère plus ses
+    métadonnées comme gérées par ses propres fournisseurs et ne les écrase pas
+    à la prochaine actualisation (scan de bibliothèque, rafraîchissement
+    programmé...) — sans ce verrou, la mise à jour semble réussir sur le
+    moment (la requête répond 200) mais ne "tient" pas dans le temps.
+    Comportement documenté et largement rapporté côté Jellyfin, pas propre à
+    ce projet.
+
+    "CommunityRating" et "CriticRating" ne sont PAS ajoutés individuellement à
+    LockedFields : une tentative en ce sens a été testée et rejetée par un
+    vrai serveur Jellyfin (12.x) avec une erreur 400 explicite — ces deux noms
+    ne font pas partie de l'énumération MetadataField que le serveur accepte
+    pour ce champ (elle couvre des champs comme Cast, Genres, Overview...,
+    pas les notes). Le verrou reste donc au niveau de l'item entier (LockData)
+    plutôt que par champ : plus large (il protège aussi les autres métadonnées
+    de l'item contre un rafraîchissement automatique), mais c'est la seule
+    option qui fonctionne réellement contre cette version de l'API. Un verrou
+    déjà posé par vous dans Jellyfin (LockedFields sur d'autres champs) est
+    conservé tel quel, sans y toucher.
 
     Retourne True si la mise à jour a réussi.
     """
@@ -157,16 +168,12 @@ def update_item_ratings(
         logger.warning("Item Jellyfin introuvable pour mise à jour: %s", item_id)
         return False
 
-    locked_fields = list(full_item.get("LockedFields") or [])
     if community_rating is not None:
         full_item["CommunityRating"] = round(community_rating, 1)
-        if "CommunityRating" not in locked_fields:
-            locked_fields.append("CommunityRating")
     if critic_rating is not None:
         full_item["CriticRating"] = round(critic_rating, 1)
-        if "CriticRating" not in locked_fields:
-            locked_fields.append("CriticRating")
-    full_item["LockedFields"] = locked_fields
+    # LockedFields n'est PAS modifié (voir docstring) : on renvoie tel quel
+    # ce que le GET a retourné, pour ne rien perdre d'un verrou existant.
     full_item["LockData"] = True
 
     resp = requests.post(
