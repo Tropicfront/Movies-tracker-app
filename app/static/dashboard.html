@@ -211,6 +211,7 @@
     <a class="btn" href="/calendar.ics">📅 Flux calendrier (.ics)</a>
     <a class="btn" href="/docs">🔧 Documentation API</a>
     <button id="btn-jellyfin" onclick="syncJellyfin()" style="display:none;">🔄 Synchroniser Jellyfin</button>
+    <button id="btn-jellyfin-full" onclick="syncJellyfin(true)" style="display:none;" title="Ignore le cache : recherche TOUS les titres à nouveau sur AlloCiné, même ceux déjà en cache. Plus lent, à utiliser seulement en cas de doute sur des notes existantes.">🔁 Rescan complet</button>
   </div>
 </header>
 
@@ -345,19 +346,25 @@ async function loadJellyfinStatus() {
     const s = await fetchJSON('/jellyfin/statut');
     lastJellyfinStatus = s;
     const btn = document.getElementById('btn-jellyfin');
+    const btnFull = document.getElementById('btn-jellyfin-full');
     btn.style.display = 'inline-flex';
+    btnFull.style.display = 'inline-flex';
     if (s.en_cours) {
       btn.disabled = true;
+      btnFull.disabled = true;
       btn.textContent = `🔄 Synchro en cours ${s.nb_traites}/${s.nb_items_bibliotheque}…`;
+      btnFull.textContent = '🔁 Rescan complet';
     } else {
       btn.disabled = false;
+      btnFull.disabled = false;
       btn.textContent = '🔄 Synchroniser Jellyfin';
+      btnFull.textContent = '🔁 Rescan complet';
     }
     const span = document.getElementById('jf-status');
     if (span) span.innerHTML = jellyfinStatusHtml(s);
     return s;
   } catch {
-    // Jellyfin non configuré ou endpoint indisponible : on n'affiche pas le bouton
+    // Jellyfin non configuré ou endpoint indisponible : on n'affiche pas les boutons
     return null;
   }
 }
@@ -388,18 +395,31 @@ async function refresh() {
   }
 }
 
-async function syncJellyfin() {
+async function syncJellyfin(forceRefresh) {
+  if (forceRefresh) {
+    const ok = confirm(
+      "Rescan complet : chaque titre de la bibliothèque sera recherché à nouveau sur AlloCiné, " +
+      "même ceux déjà en cache. Nettement plus lent qu'une synchro normale (les titres déjà " +
+      "trouvés sont normalement servis depuis le cache). Continuer ?"
+    );
+    if (!ok) return;
+  }
   const btn = document.getElementById('btn-jellyfin');
+  const btnFull = document.getElementById('btn-jellyfin-full');
   btn.disabled = true;
-  btn.textContent = '🔄 Démarrage…';
+  btnFull.disabled = true;
+  (forceRefresh ? btnFull : btn).textContent = forceRefresh ? '🔁 Démarrage du rescan…' : '🔄 Démarrage…';
   try {
     // L'API répond immédiatement : la synchro tourne en arrière-plan.
-    await fetchJSON('/jellyfin/sync-notes', { method: 'POST' });
+    const url = '/jellyfin/sync-notes' + (forceRefresh ? '?force_refresh=true' : '');
+    await fetchJSON(url, { method: 'POST' });
     await pollJellyfin();
   } catch (e) {
     alert('Échec de la synchronisation Jellyfin : ' + e.message);
     btn.disabled = false;
+    btnFull.disabled = false;
     btn.textContent = '🔄 Synchroniser Jellyfin';
+    btnFull.textContent = '🔁 Rescan complet';
   }
 }
 

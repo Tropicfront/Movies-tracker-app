@@ -44,6 +44,7 @@ from app.config import (
 )
 from app.matching import normalize_title
 from app.ratelimit import wait_for_slot
+from app import allocine_cache
 from app.models import NoteAlloCine
 
 logger = logging.getLogger("allocine_scraper")
@@ -288,15 +289,39 @@ def _extract_notes(soup: BeautifulSoup) -> tuple[Optional[float], Optional[float
     return note_presse, note_spectateurs
 
 
-def get_note_allocine(titre: str, type_: str = "film", annee: Optional[int] = None) -> NoteAlloCine:
+def get_note_allocine(
+    titre: str, type_: str = "film", annee: Optional[int] = None, force_refresh: bool = False
+) -> NoteAlloCine:
     """
     Récupère les notes AlloCiné (presse et spectateurs) pour un film ou une
     série, à partir de son titre.
 
+    Le résultat (trouvé ou non) est mis en cache sur disque
+    (ALLOCINE_CACHE_PATH, valable ALLOCINE_CACHE_TTL_DAYS jours) : un titre
+    déjà résolu lors d'une synchro précédente ne redéclenche aucune requête
+    tant que le cache est valide.
+
     :param titre: Titre du film ou de la série
     :param type_: "film" ou "serie"
     :param annee: année de production (ex. depuis Jellyfin) pour départager les homonymes
+    :param force_refresh: ignore le cache et refait la recherche, même si une
+        entrée valide existe (utile pour un titre précis via /allocine/note ;
+        pour toute la bibliothèque, voir POST /jellyfin/sync-notes?force_refresh=true)
     """
+    if not force_refresh:
+        cached = allocine_cache.get_cached(titre, type_, annee)
+        if cached is not None:
+            logger.debug("Cache AlloCiné : résultat réutilisé pour '%s' (%s)", titre, type_)
+            return cached
+
+    note = _fetch_note_allocine(titre, type_, annee)
+    allocine_cache.set_cached(titre, type_, note, annee)
+    return note
+
+
+def _fetch_note_allocine(titre: str, type_: str, annee: Optional[int]) -> NoteAlloCine:
+    """Récupération effective (sans cache) : logique inchangée par rapport à
+    avant l'ajout du cache, simplement extraite dans sa propre fonction."""
     try:
         fiche_url = _find_fiche_url(titre, type_, annee)
         if not fiche_url:

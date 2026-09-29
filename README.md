@@ -19,7 +19,8 @@ pathe.fr est protégé par **Akamai Bot Manager**, qui a résisté à toutes les
 ```bash
 cp .env.example .env
 # éditez .env : JELLYFIN_URL et JELLYFIN_API_KEY (Dashboard Jellyfin > Clés API)
-docker compose up --build
+docker build -t tropicfront/movies_tracker:latest .   # construit l'image (le compose ne construit pas)
+docker compose up -d
 # optionnel : fichier d'alias de titres, à copier dans le volume (voir « Volume de données » plus bas)
 ```
 
@@ -29,14 +30,22 @@ Si vous ne voulez utiliser que le scraping AlloCiné sans Jellyfin, ne renseigne
 
 ### Image Docker
 
-Le `docker-compose.yml` fourni construit l'image localement (`build: .`) et la tague `tropicfront/movies_tracker:latest`. Pour la publier sur Docker Hub après un premier build réussi :
+Le `docker-compose.yml` **ne construit pas** l'image : il utilise `tropicfront/movies_tracker:latest`, qui doit
+déjà exister sur l'hôte Docker (ou sur un registre). Construisez-la depuis le dossier du projet, celui qui
+contient le `Dockerfile` :
 
 ```bash
-docker compose build
+docker build -t tropicfront/movies_tracker:latest .
+```
+
+Pour la publier sur Docker Hub (utile si Docker/Portainer tourne sur une autre machine) :
+
+```bash
 docker push tropicfront/movies_tracker:latest
 ```
 
-D'autres machines peuvent alors utiliser directement l'image publiée sans avoir le code source, en retirant la ligne `build: .` de leur `docker-compose.yml`.
+Après **chaque mise à jour du code**, reconstruisez l'image puis recréez le conteneur
+(`docker compose up -d --force-recreate`) : `docker compose up` ne reconstruit jamais une image déjà présente.
 
 ## Endpoints
 
@@ -48,8 +57,9 @@ D'autres machines peuvent alors utiliser directement l'image publiée sans avoir
 | POST | `/refresh` | Relance manuellement le scraping AlloCiné |
 | GET | `/films` | Liste des films à l'affiche (+ note AlloCiné) |
 | GET | `/films/{slug}` | Détail d'un film (séances, synopsis, note...) |
-| GET | `/allocine/note?titre=...&type=film\|serie` | Note AlloCiné pour n'importe quel titre |
-| POST | `/jellyfin/sync-notes` | Relance la synchro des notes AlloCiné → Jellyfin |
+| GET | `/allocine/note?titre=...&type=film\|serie[&annee=...][&force_refresh=true]` | Note AlloCiné pour n'importe quel titre |
+| DELETE | `/allocine/cache` | Vide le cache des résultats AlloCiné |
+| POST | `/jellyfin/sync-notes[?force_refresh=true]` | Relance la synchro des notes AlloCiné → Jellyfin |
 | GET | `/jellyfin/statut` | Statut de la dernière synchro Jellyfin |
 | GET | `/calendar.ics` | Flux iCal des films à l'affiche présents dans votre bibliothèque Jellyfin |
 
@@ -133,6 +143,28 @@ personnel/non commercial, avec une fréquence de scraping raisonnable (une fois 
 sélectionné (aujourd'hui par défaut). Un sélecteur de date existe sur le site, mais son paramètre
 d'URL exact n'a pas été identifié.
 
+## Déploiement avec Portainer
+
+Le `docker-compose.yml` ne contient pas de `build` : Portainer (Web editor, Upload ou Repository) n'a donc
+besoin d'aucun `Dockerfile`, seulement de l'image. Sans cela, on obtenait l'erreur
+`failed to read dockerfile: open Dockerfile: no such file or directory` (le mode Web editor/Upload n'envoie
+que le fichier compose, sans `Dockerfile` ni dossier `app/`).
+
+1. Construire l'image (voir « Image Docker » ci-dessus). Si Portainer tourne sur **une autre machine** que
+   celle du build, passez par un registre : `docker login` puis `docker push tropicfront/movies_tracker:latest`
+   (image privée : ajouter le registre dans Portainer > Registries).
+2. Créer la stack avec le contenu de `docker-compose.yml`.
+3. Renseigner `JELLYFIN_URL` et `JELLYFIN_API_KEY` dans **Environment variables** de la stack (les modes
+   Web editor et Upload n'ont pas de fichier `.env`).
+
+Sans registre, à ma connaissance Portainer sait aussi construire une image : *Images > Build a new image >
+Upload*, avec une archive dont le `Dockerfile` est **à la racine** (pas dans un sous-dossier) :
+
+```bash
+cd allocine-pathe-app && tar -czf ../movies_tracker.tar.gz .
+```
+Nom de l'image : `tropicfront/movies_tracker:latest`.
+
 ## Débit vers AlloCiné et durée de la synchro
 
 Deux réglages complémentaires (dans `docker-compose.yml`, surchargeables via `.env` ou les variables
@@ -146,6 +178,42 @@ Un titre = 2 requêtes (recherche + fiche). Avec les défauts, comptez donc **en
 (2 s pour les 2 requêtes + 2 s de pause) : ~20 minutes pour 300 titres. Le log de démarrage de la
 synchro affiche cette estimation minimale. La synchro tourne en arrière-plan : la page reste utilisable.
 Une valeur invalide (texte, négatif) est ignorée avec un avertissement dans les logs et le défaut est utilisé.
+
+### Cache des résultats AlloCiné
+
+Seuls les titres **trouvés** sont mis en cache sur disque (`ALLOCINE_CACHE_PATH`, dans le volume de
+données, persiste entre redémarrages). Une synchro répétée ne refait donc **aucune requête** pour un
+titre déjà résolu. Un titre **non trouvé**, en revanche, est toujours recherché à nouveau à chaque
+synchro, sans limite de temps : AlloCiné peut publier sa fiche entre-temps (sortie récente, série en
+cours de diffusion...), et il serait dommage de rester bloqué sur un "non trouvé" indéfiniment.
+
+- `ALLOCINE_CACHE_TTL_DAYS` (défaut `30`) : durée de validité d'une entrée **trouvée**, en jours. `0`
+  ou moins désactive complètement le cache (chaque synchro refait tout, y compris les titres trouvés).
+- Bouton **🔁 Rescan complet** sur le dashboard (ou `POST /jellyfin/sync-notes?force_refresh=true`) :
+  ignore le cache pour cette synchro et recherche TOUS les titres à nouveau, y compris ceux déjà en
+  cache — utile en cas de doute sur des notes existantes (ex. après une correction de la logique de
+  correspondance). Sensiblement plus lent qu'une synchro normale ; une confirmation est demandée avant
+  de lancer le rescan depuis le dashboard.
+- `DELETE /allocine/cache` : vide le cache entièrement.
+- `GET /allocine/note?...&force_refresh=true` : idem pour un seul titre, sans passer par une synchro.
+
+## Les notes n'apparaissent pas dans Jellyfin malgré des logs "mis à jour"
+
+Comportement Jellyfin connu et documenté (pas propre à ce projet) : une mise à jour de champ envoyée
+sans verrou explicite (`LockData`/`LockedFields`) est traitée comme une valeur "gérée par les
+fournisseurs de métadonnées", et écrasée au prochain scan de bibliothèque ou rafraîchissement — la
+requête répond 200 (d'où le "mis à jour" dans les logs), mais la valeur ne tient pas dans le temps.
+
+C'est corrigé dans `app/jellyfin_client.py` : chaque mise à jour verrouille désormais explicitement les
+champs `CommunityRating`/`CriticRating` qu'elle modifie (sans toucher aux verrous que vous auriez posés
+vous-même sur d'autres champs). Si le problème persiste malgré cette version :
+1. Vérifiez sur la fiche du film dans Jellyfin (icône de verrou / Édition des métadonnées) que
+   `Community Rating` et `Critic Rating` apparaissent bien comme verrouillés.
+2. Si non : relancez une synchro (`force_refresh=true` pour être sûr de repasser sur ce titre) et
+   revérifiez juste après.
+3. Si le verrou est bien posé mais saute tout seul après un moment : c'est un bug Jellyfin connu sur
+   certaines versions 10.11.x (`LockedFields` peut se réinitialiser au redémarrage du serveur, ou ne pas
+   persister via l'API) — indépendant de ce projet, à signaler côté Jellyfin.
 
 ## Volume de données
 
@@ -174,7 +242,8 @@ Si `/films` renvoie une liste vide ou incomplète :
 3. Ajustez les expressions régulières et sélecteurs dans
    `app/scrapers/allocine_theater_scraper.py` (l'extraction se base sur le flux de texte après
    chaque titre de film, pas sur des classes CSS précises).
-4. Reconstruisez l'image : `docker compose up --build`
+4. Reconstruisez l'image (`docker build -t tropicfront/movies_tracker:latest .`) puis recréez le
+   conteneur (`docker compose up -d --force-recreate`).
 
 ## Configuration (variables d'environnement)
 
@@ -190,6 +259,8 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `TITLE_MATCH_THRESHOLD` | `0.85` | Seuil de similarité (0-1) pour le rapprochement approximatif de titres |
 | `ALLOCINE_REQUESTS_PER_SECOND` | `1` | Nombre **maximal** de requêtes par seconde vers AlloCiné, toutes requêtes confondues (recherche, fiche, page salle). Décimales acceptées : `0.5` = une requête toutes les 2 s. `0` = pas de limite |
 | `ALLOCINE_SYNC_DELAY_SECONDS` | `2` | Pause supplémentaire entre chaque **titre** lors de la synchro Jellyfin, en plus de la limite ci-dessus (évite les 429 AlloCiné sur les grosses bibliothèques) |
+| `ALLOCINE_CACHE_PATH` | `/app/data/allocine_cache.json` | Fichier de cache des résultats AlloCiné (recherche + note par titre) |
+| `ALLOCINE_CACHE_TTL_DAYS` | `30` | Durée de validité d'une entrée du cache, en jours. `<= 0` désactive le cache |
 | `JELLYFIN_IGNORE_REGEX` | `\s[-–—]\s*Saga\s*$` | Éléments Jellyfin ignorés (regex, insensible à la casse, appliquée au nom). Par défaut les regroupements « … - Saga » ; les collections (BoxSet) sont toujours exclues. Vide = désactivé |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 
@@ -201,6 +272,8 @@ app/
   config.py                      # URLs, headers HTTP, config debug/Jellyfin/calendrier
   models.py                      # Modèles Pydantic (Film, Seance, NoteAlloCine, StatutSyncJellyfin...)
   storage.py                     # Stockage en mémoire + orchestration des pipelines
+  allocine_cache.py              # Cache disque des résultats AlloCiné (par titre)
+  ratelimit.py                   # Limiteur de débit global vers AlloCiné
   matching.py                    # Normalisation et rapprochement de titres (+ alias)
   jellyfin_client.py             # Client API Jellyfin (lecture bibliothèque + mise à jour notes)
   calendar_builder.py            # Génération du flux ICS filtré par bibliothèque Jellyfin

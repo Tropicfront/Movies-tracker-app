@@ -71,6 +71,17 @@ ALLOCINE_REQUESTS_PER_SECOND = _env_float("ALLOCINE_REQUESTS_PER_SECOND", 1.0)
 # + fiche). 0 = pas de pause supplémentaire.
 ALLOCINE_SYNC_DELAY_SECONDS = _env_float("ALLOCINE_SYNC_DELAY_SECONDS", 2.0)
 
+# --- Cache des résultats AlloCiné (recherche + note) ---
+# Évite de refaire une recherche + une fiche pour un titre déjà résolu lors
+# d'une synchro précédente. Stocké dans le volume de données (persiste entre
+# redémarrages/reconstructions). Voir app/allocine_cache.py.
+ALLOCINE_CACHE_PATH = os.getenv("ALLOCINE_CACHE_PATH", "/app/data/allocine_cache.json")
+# Durée de validité d'une entrée, en jours (accepte les décimales). Passé ce
+# délai, le titre est de nouveau recherché sur AlloCiné (utile si une note
+# était absente lors du premier passage, ou a changé). <= 0 désactive le
+# cache : chaque titre est toujours recherché à nouveau.
+ALLOCINE_CACHE_TTL_DAYS = _env_float("ALLOCINE_CACHE_TTL_DAYS", 30.0)
+
 # --- Debug ---
 # Si activé, sauvegarde le HTML brut récupéré dans /app/data pour permettre
 # d'ajuster les sélecteurs CSS en cas de changement de structure du site.

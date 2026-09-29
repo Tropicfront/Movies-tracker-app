@@ -120,7 +120,7 @@ def _get_full_item(item_id: str) -> Optional[dict]:
     params = {
         "Ids": item_id,
         "Recursive": "true",
-        "Fields": "Overview,Genres,ProviderIds,Studios,Tags,ProductionYear,PremiereDate,CommunityRating,CriticRating",
+        "Fields": "Overview,Genres,ProviderIds,Studios,Tags,ProductionYear,PremiereDate,CommunityRating,CriticRating,LockedFields,LockData",
     }
     resp = requests.get(
         _items_base_url(), headers=_headers(), params=params, timeout=REQUEST_TIMEOUT
@@ -137,6 +137,16 @@ def update_item_ratings(
 ) -> bool:
     """
     Met à jour CommunityRating et/ou CriticRating pour un item Jellyfin.
+
+    Verrouille explicitement les champs modifiés (LockData=true,
+    LockedFields += le(s) champ(s) touché(s)) : sans ça, Jellyfin considère
+    ces champs comme gérés par ses propres fournisseurs de métadonnées et les
+    écrase à la prochaine actualisation (scan de bibliothèque, rafraîchissement
+    programmé...) — la mise à jour semble réussir sur le moment (la requête
+    répond 200) mais ne "tient" pas dans le temps. Comportement documenté et
+    largement rapporté côté Jellyfin, pas propre à ce projet. Un verrou déjà
+    posé par vous dans Jellyfin (sur d'autres champs) est conservé tel quel.
+
     Retourne True si la mise à jour a réussi.
     """
     if not JELLYFIN_URL or not JELLYFIN_API_KEY:
@@ -147,10 +157,17 @@ def update_item_ratings(
         logger.warning("Item Jellyfin introuvable pour mise à jour: %s", item_id)
         return False
 
+    locked_fields = list(full_item.get("LockedFields") or [])
     if community_rating is not None:
         full_item["CommunityRating"] = round(community_rating, 1)
+        if "CommunityRating" not in locked_fields:
+            locked_fields.append("CommunityRating")
     if critic_rating is not None:
         full_item["CriticRating"] = round(critic_rating, 1)
+        if "CriticRating" not in locked_fields:
+            locked_fields.append("CriticRating")
+    full_item["LockedFields"] = locked_fields
+    full_item["LockData"] = True
 
     resp = requests.post(
         f"{JELLYFIN_URL}/Items/{item_id}",

@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 
 from app.models import Film, NoteAlloCine, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_scraper import get_note_allocine
+from app import allocine_cache
 from app.storage import (
     run_scraping_pipeline,
     get_all_films,
@@ -143,17 +144,26 @@ def allocine_note(
     titre: str = Query(..., description="Titre du film ou de la série"),
     type: str = Query("film", pattern="^(film|serie)$", description="'film' ou 'serie'"),
     annee: Optional[int] = Query(None, description="Année de production (départage les homonymes)"),
+    force_refresh: bool = Query(False, description="Ignore le cache AlloCiné et refait la recherche"),
 ) -> NoteAlloCine:
     """
     Endpoint générique pour récupérer la note AlloCiné (presse/spectateurs)
-    de n'importe quel film ou série, sans passer par le Pathé Toulouse Wilson.
+    de n'importe quel film ou série.
     Exemple: /allocine/note?titre=Dune%20Deuxième%20Partie&type=film
+
+    Le résultat est mis en cache (voir ALLOCINE_CACHE_TTL_DAYS) : un appel
+    répété pour le même titre ne refait pas la recherche tant que le cache
+    est valide, sauf avec force_refresh=true.
     """
-    return get_note_allocine(titre, type_=type, annee=annee)
+    return get_note_allocine(titre, type_=type, annee=annee, force_refresh=force_refresh)
 
 
 @app.post("/jellyfin/sync-notes", response_model=StatutSyncJellyfin, tags=["Jellyfin"])
-def jellyfin_sync_notes() -> StatutSyncJellyfin:
+def jellyfin_sync_notes(
+    force_refresh: bool = Query(
+        False, description="Ignore le cache AlloCiné et refait la recherche pour TOUS les titres"
+    ),
+) -> StatutSyncJellyfin:
     """
     Parcourt la bibliothèque Jellyfin (films + séries), récupère la note
     AlloCiné de chaque titre, et met à jour CommunityRating (note spectateurs)
@@ -163,17 +173,35 @@ def jellyfin_sync_notes() -> StatutSyncJellyfin:
     Lancé automatiquement au démarrage du conteneur si ces variables sont
     définies ; cet endpoint permet de relancer la synchro manuellement.
 
+    Les titres déjà résolus lors d'une synchro précédente sont servis depuis
+    le cache AlloCiné (voir ALLOCINE_CACHE_TTL_DAYS) plutôt que recherchés à
+    nouveau : passez force_refresh=true pour forcer une recherche complète
+    (voir aussi DELETE /allocine/cache pour vider le cache sans relancer de
+    synchro).
+
     La synchro dure plusieurs minutes : elle tourne en arrière-plan et cet
     endpoint répond immédiatement. Suivre l'avancement via GET /jellyfin/statut
     (champs en_cours / nb_traites / nb_items_bibliotheque). Si une synchro est
-    déjà en cours, aucune seconde synchro n'est lancée.
+    déjà en cours, aucune seconde synchro n'est lancée (y compris avec
+    force_refresh différent : la demande en cours va jusqu'au bout).
     """
     if not jellyfin_configured():
         raise HTTPException(
             status_code=400,
             detail="JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés (variables d'environnement).",
         )
-    return start_jellyfin_notes_sync_async()
+    return start_jellyfin_notes_sync_async(force_refresh=force_refresh)
+
+
+@app.delete("/allocine/cache", tags=["AlloCiné"])
+def allocine_cache_clear() -> dict:
+    """
+    Vide le cache des résultats AlloCiné (recherche + note par titre). Le
+    prochain appel à /allocine/note ou à la synchro Jellyfin recherchera donc
+    chaque titre à nouveau. Alternative à force_refresh quand on veut vider
+    le cache sans forcément relancer une synchro dans la foulée.
+    """
+    return {"entrees_supprimees": allocine_cache.clear_cache()}
 
 
 @app.get("/jellyfin/statut", response_model=StatutSyncJellyfin, tags=["Jellyfin"])

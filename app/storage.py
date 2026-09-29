@@ -98,7 +98,7 @@ def get_statut() -> StatutScraping:
         return _statut
 
 
-def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
+def run_jellyfin_notes_sync(force_refresh: bool = False) -> StatutSyncJellyfin:
     """
     Parcourt la bibliothèque Jellyfin (films + séries), récupère la note
     AlloCiné correspondante pour chaque titre, et met à jour CommunityRating
@@ -110,6 +110,11 @@ def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
     La progression est publiée en direct (en_cours / nb_traites).
 
     Ne lève jamais d'exception : les erreurs sont capturées et reportées.
+
+    :param force_refresh: ignore le cache AlloCiné pour tous les titres et les
+        recherche tous à nouveau (voir app/allocine_cache.py). Utile après un
+        changement dans la logique de correspondance, ou si vous pensez que
+        des notes sont restées figées par erreur.
     """
     global _statut_sync_jellyfin, _sync_running
 
@@ -120,13 +125,13 @@ def run_jellyfin_notes_sync() -> StatutSyncJellyfin:
         _sync_running = True
 
     try:
-        return _run_jellyfin_notes_sync_locked()
+        return _run_jellyfin_notes_sync_locked(force_refresh)
     finally:
         with _lock:
             _sync_running = False
 
 
-def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
+def _run_jellyfin_notes_sync_locked(force_refresh: bool = False) -> StatutSyncJellyfin:
     global _statut_sync_jellyfin
     erreurs: List[str] = []
     nb_appliquees = 0
@@ -184,7 +189,7 @@ def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
         annee = annee if isinstance(annee, int) else None
 
         try:
-            note = get_note_allocine(titre, type_=type_allocine, annee=annee)
+            note = get_note_allocine(titre, type_=type_allocine, annee=annee, force_refresh=force_refresh)
         except Exception as e:
             logger.exception("Erreur récupération note AlloCiné pour '%s'", titre)
             erreurs.append(f"AlloCiné ({titre}): {e}")
@@ -231,7 +236,7 @@ def _run_jellyfin_notes_sync_locked() -> StatutSyncJellyfin:
     return statut
 
 
-def start_jellyfin_notes_sync_async() -> StatutSyncJellyfin:
+def start_jellyfin_notes_sync_async(force_refresh: bool = False) -> StatutSyncJellyfin:
     """
     Lance la synchro Jellyfin dans un thread d'arrière-plan et rend la main
     immédiatement (l'API/la page web restent utilisables pendant que la synchro
@@ -241,7 +246,7 @@ def start_jellyfin_notes_sync_async() -> StatutSyncJellyfin:
     with _lock:
         if _sync_running:
             return _statut_sync_jellyfin
-    Thread(target=run_jellyfin_notes_sync, name="jellyfin-sync", daemon=True).start()
+    Thread(target=run_jellyfin_notes_sync, args=(force_refresh,), name="jellyfin-sync", daemon=True).start()
     with _lock:
         # Marque tout de suite "en cours" pour que le premier affichage soit juste
         # (le thread peut mettre quelques ms à démarrer).
