@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from app.models import Film, ItemBibliotheque, NoteAlloCine, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_scraper import get_note_allocine
-from app import allocine_cache, jellyfin_client
+from app import allocine_cache, image_cache, jellyfin_client
 from app.storage import (
     run_scraping_pipeline,
     get_all_films,
@@ -295,7 +295,11 @@ _ITEM_ID_RE = re.compile(
     r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
 )
 _POSTER_WIDTH_DEFAULT = 400
-_POSTER_WIDTH_MIN, _POSTER_WIDTH_MAX = 100, 1000
+# Largeurs d'affiche autorisées. La largeur demandée est arrondie au palier
+# SUPÉRIEUR : sans cela, chaque valeur entière entre 100 et 1000 créerait son
+# propre fichier sur disque (jusqu'à ~900 variantes par affiche, par simple
+# changement du paramètre `w`).
+_POSTER_WIDTHS = (200, 300, 400, 600, 800, 1000)
 
 
 @app.get("/jellyfin/image/{item_id}", tags=["Jellyfin"])
@@ -304,8 +308,17 @@ def jellyfin_image(
     w: int = Query(
         _POSTER_WIDTH_DEFAULT,
         description=(
-            f"Largeur maximale de l'affiche en pixels (bornée entre {_POSTER_WIDTH_MIN} et "
-            f"{_POSTER_WIDTH_MAX}). Jellyfin redimensionne lui-même l'image."
+            "Largeur de l'affiche en pixels, arrondie au palier supérieur parmi "
+            f"{', '.join(map(str, _POSTER_WIDTHS))} (au-delà de {_POSTER_WIDTHS[-1]} : {_POSTER_WIDTHS[-1]}). "
+            "Jellyfin redimensionne lui-même l'image."
+        ),
+    ),
+    tag: Optional[str] = Query(
+        None,
+        description=(
+            "Version de l'affiche (ImageTags.Primary de Jellyfin). Fournie par la page "
+            "/bibliotheque : l'entrée de cache est alors valable indéfiniment, et se renouvelle "
+            "d'elle-même quand l'affiche change côté Jellyfin."
         ),
     ),
 ) -> Response:
@@ -317,14 +330,28 @@ def jellyfin_image(
     la récupère avec la clé API du serveur et la retransmet.
 
     L'image est redimensionnée par Jellyfin (paramètre `w`, 400 px par défaut)
-    plutôt que renvoyée en taille d'origine : une grille de centaines
-    d'affiches ne doit pas télécharger des centaines de Mo.
+    et GARDÉE SUR DISQUE (voir POSTER_CACHE_DIR ; largeurs arrondies à quelques paliers pour borner l'espace disque) : une affiche déjà vue est
+    servie sans aucune requête vers Jellyfin, même si Jellyfin est éteint.
+    L'en-tête `X-Poster-Cache` indique HIT (disque) ou MISS (Jellyfin).
     """
-    if not jellyfin_configured():
-        raise HTTPException(status_code=400, detail="JELLYFIN_URL/JELLYFIN_API_KEY non configurés.")
     if not _ITEM_ID_RE.match(item_id):
         raise HTTPException(status_code=400, detail="Identifiant d'item Jellyfin invalide.")
-    largeur = max(_POSTER_WIDTH_MIN, min(w, _POSTER_WIDTH_MAX))
+    if tag is not None and not image_cache.TAG_RE.match(tag):
+        raise HTTPException(status_code=400, detail="Paramètre tag invalide.")
+    largeur = next((p for p in _POSTER_WIDTHS if p >= w), _POSTER_WIDTHS[-1])
+
+    # Avec un tag, l'URL change quand l'affiche change : le navigateur peut donc
+    # la garder « pour toujours ». Sans tag, une journée.
+    cache_control = "public, max-age=31536000, immutable" if tag else "public, max-age=86400"
+
+    cached = image_cache.get(item_id, largeur, tag)
+    if cached is not None:
+        content, content_type = cached
+        return Response(content=content, media_type=content_type,
+                        headers={"Cache-Control": cache_control, "X-Poster-Cache": "HIT"})
+
+    if not jellyfin_configured():
+        raise HTTPException(status_code=400, detail="JELLYFIN_URL/JELLYFIN_API_KEY non configurés.")
     try:
         result = jellyfin_client.get_item_image(item_id, max_width=largeur)
     except Exception as e:
@@ -332,12 +359,21 @@ def jellyfin_image(
     if result is None:
         raise HTTPException(status_code=404, detail="Cet item n'a pas d'affiche sur Jellyfin.")
     content, content_type = result
-    return Response(
-        content=content,
-        media_type=content_type,
-        # Les affiches changent rarement : mise en cache navigateur d'une journée.
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    image_cache.put(item_id, largeur, tag, content, content_type)
+    return Response(content=content, media_type=content_type,
+                    headers={"Cache-Control": cache_control, "X-Poster-Cache": "MISS"})
+
+
+@app.delete("/jellyfin/image-cache", tags=["Jellyfin"])
+def jellyfin_image_cache_clear() -> dict:
+    """Vide le cache disque des affiches (elles seront redemandées à Jellyfin à la prochaine vue)."""
+    return {"fichiers_supprimes": image_cache.clear()}
+
+
+@app.get("/jellyfin/image-cache", tags=["Jellyfin"])
+def jellyfin_image_cache_stats() -> dict:
+    """Nombre d'affiches en cache et espace disque utilisé."""
+    return {"actif": image_cache.enabled(), **image_cache.stats()}
 
 
 @app.get("/calendar.ics", tags=["Calendrier"])

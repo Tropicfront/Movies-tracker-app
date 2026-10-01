@@ -191,9 +191,18 @@ def _run_jellyfin_notes_sync_locked(
     """
     global _statut_sync_jellyfin
     erreurs: List[str] = []
+    nb_erreurs_total = 0
     nb_appliquees = 0
+    nb_non_persistees = 0
     nb_non_trouves = 0
     nb_traites = 0
+    MAX_ERREURS = 100  # le statut est renvoyé tel quel par l'API : on borne sa taille
+
+    def add_erreur(msg: str) -> None:
+        nonlocal nb_erreurs_total
+        nb_erreurs_total += 1
+        if len(erreurs) < MAX_ERREURS:
+            erreurs.append(msg)
 
     def publish(items_count: int, en_cours: bool, derniere_sync: Optional[str] = None) -> StatutSyncJellyfin:
         global _statut_sync_jellyfin
@@ -203,8 +212,12 @@ def _run_jellyfin_notes_sync_locked(
             derniere_sync=derniere_sync,
             nb_items_bibliotheque=items_count,
             nb_notes_appliquees=nb_appliquees,
+            nb_non_persistees=nb_non_persistees,
             nb_non_trouves=nb_non_trouves,
-            erreurs=list(erreurs),
+            erreurs=list(erreurs) + (
+                [f"… et {nb_erreurs_total - MAX_ERREURS} autre(s) erreur(s) non listée(s)"]
+                if nb_erreurs_total > MAX_ERREURS else []
+            ),
         )
         with _lock:
             _statut_sync_jellyfin = statut
@@ -214,7 +227,7 @@ def _run_jellyfin_notes_sync_locked(
         items = jellyfin_client.get_library_items()
     except Exception as e:
         logger.exception("Échec de la récupération de la bibliothèque Jellyfin")
-        erreurs.append(f"Jellyfin (lecture bibliothèque): {e}")
+        add_erreur(f"Jellyfin (lecture bibliothèque): {e}")
         return publish(0, False, datetime.now(timezone.utc).isoformat())
 
     publish(len(items), True)  # la progression devient visible tout de suite
@@ -267,7 +280,7 @@ def _run_jellyfin_notes_sync_locked(
                 note = get_note_allocine(titre, type_=type_allocine, annee=annee, force_refresh=force_refresh)
             except Exception as e:
                 logger.exception("Erreur récupération note AlloCiné pour '%s'", titre)
-                erreurs.append(f"AlloCiné ({titre}): {e}")
+                add_erreur(f"AlloCiné ({titre}): {e}")
                 nb_traites += 1
                 publish(len(items), True)
                 continue
@@ -285,31 +298,45 @@ def _run_jellyfin_notes_sync_locked(
             nb_non_trouves += 1
         else:
             try:
-                ok = jellyfin_client.update_item_ratings(
+                res = jellyfin_client.update_item_ratings(
                     item_id, community_rating=community_rating, critic_rating=critic_rating
                 )
-                if ok:
+                if res.persistee is False:
+                    # Jellyfin a répondu OK, mais la relecture montre une AUTRE valeur :
+                    # la note n'est pas enregistrée. C'est exactement le cas "les logs
+                    # disent mis à jour mais rien n'apparaît dans Jellyfin".
+                    nb_non_persistees += 1
+                    add_erreur(f"Jellyfin (non persistée '{titre}'): {res.detail}")
+                    logger.warning("Jellyfin NE CONSERVE PAS la note de %r : %s", titre, res.detail)
+                elif res.acceptee:
                     nb_appliquees += 1
                     logger.info(
-                        "Jellyfin mis à jour : %r -> CommunityRating=%s, CriticRating=%s",
+                        "Jellyfin mis à jour%s : %r -> CommunityRating=%s, CriticRating=%s",
+                        " (relu et confirmé)" if res.persistee else " (non vérifié)",
                         titre, community_rating, critic_rating,
                     )
                 else:
-                    erreurs.append(f"Jellyfin (mise à jour '{titre}'): échec API")
+                    add_erreur(f"Jellyfin (mise à jour '{titre}'): {res.detail or 'échec API'}")
             except Exception as e:
                 logger.exception("Erreur mise à jour Jellyfin pour '%s'", titre)
-                erreurs.append(f"Jellyfin (mise à jour '{titre}'): {e}")
+                add_erreur(f"Jellyfin (mise à jour '{titre}'): {e}")
 
         nb_traites += 1
         publish(len(items), True)
 
     statut = publish(len(items), False, datetime.now(timezone.utc).isoformat())
     logger.info(
-        "%s terminée: %d items, %d notes appliquées, %d %s, %d erreur(s)",
+        "%s terminée: %d items, %d notes appliquées, %d NON persistées par Jellyfin, %d %s, %d erreur(s)",
         "Application du cache" if cache_only else "Sync Jellyfin",
-        len(items), nb_appliquees, nb_non_trouves,
-        "sans entrée de cache" if cache_only else "non trouvés", len(erreurs),
+        len(items), nb_appliquees, nb_non_persistees, nb_non_trouves,
+        "sans entrée de cache" if cache_only else "non trouvés", nb_erreurs_total,
     )
+    if nb_non_persistees:
+        logger.warning(
+            "%d note(s) acceptée(s) par Jellyfin mais NON conservée(s) : Jellyfin les écrase ou les ignore. "
+            "Voir /jellyfin/statut (erreurs) et la colonne « Jellyfin » de la page /bibliotheque.",
+            nb_non_persistees,
+        )
     return statut
 
 
@@ -373,6 +400,38 @@ def _tronquer(texte: Optional[str], limite: int = 400) -> Optional[str]:
     return texte[:limite].rsplit(" ", 1)[0].rstrip(" ,;:.-—") + "…"
 
 
+_TOLERANCE_ETAT = 0.06
+
+
+def _etat_jellyfin(note: Optional[object], community: Optional[float], critic: Optional[float]) -> Optional[str]:
+    """
+    Compare ce que Jellyfin CONTIENT à ce qu'il devrait contenir d'après la
+    note AlloCiné en cache (spectateurs x2 -> /10, presse x20 -> /100).
+
+    "different" : au moins une note est présente dans Jellyfin avec une AUTRE
+                  valeur (ex. une note issue d'un autre fournisseur).
+    "absente"   : aucune note ne diffère, mais au moins une note attendue
+                  MANQUE dans Jellyfin (y compris si l'autre est bien présente).
+    "a_jour"    : toutes les notes attendues sont présentes et identiques.
+    None        : pas de note AlloCiné connue, donc rien à comparer.
+    """
+    if note is None or not getattr(note, "trouve", False):
+        return None
+    attendues = []  # (valeur attendue, valeur réelle dans Jellyfin)
+    if note.note_spectateurs is not None:
+        attendues.append((_note_to_community_rating(note.note_spectateurs), community))
+    if note.note_presse is not None:
+        attendues.append((_note_to_critic_rating(note.note_presse), critic))
+    if not attendues:
+        return None
+
+    if any(reel is not None and abs(float(reel) - voulu) > _TOLERANCE_ETAT for voulu, reel in attendues):
+        return "different"
+    if any(reel is None for _, reel in attendues):
+        return "absente"
+    return "a_jour"
+
+
 def get_jellyfin_library_with_notes() -> List[ItemBibliotheque]:
     """
     Retourne la bibliothèque Jellyfin (films + séries) enrichie de la note
@@ -411,6 +470,8 @@ def get_jellyfin_library_with_notes() -> List[ItemBibliotheque]:
         # laisse le navigateur essayer, la page affiche un repli en cas d'échec.
         image_tags = item.get("ImageTags")
         a_une_affiche = True if image_tags is None else bool(image_tags.get("Primary"))
+        poster_tag = (image_tags or {}).get("Primary")
+        c_jf, k_jf = item.get("CommunityRating"), item.get("CriticRating")
 
         resultat.append(ItemBibliotheque(
             id=item_id,
@@ -420,6 +481,10 @@ def get_jellyfin_library_with_notes() -> List[ItemBibliotheque]:
             genres=item.get("Genres") or [],
             synopsis=_tronquer(item.get("Overview")),
             a_une_affiche=a_une_affiche,
+            poster_tag=poster_tag,
             allocine=note,
+            jellyfin_community_rating=c_jf,
+            jellyfin_critic_rating=k_jf,
+            jellyfin_etat=_etat_jellyfin(note, c_jf, k_jf),
         ))
     return resultat

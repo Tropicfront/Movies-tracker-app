@@ -161,6 +161,9 @@
   }
   .badge b { color: var(--accent); }
   .badge.muted { color: var(--text-muted); }
+  .jf-line { font-size: 0.78rem; line-height: 1.35; }
+  .jf-line.ok { color: var(--success); }
+  .jf-line.warn { color: var(--error); }
   .synopsis {
     font-size: 0.78rem;
     color: var(--text-muted);
@@ -213,6 +216,7 @@
       <option value="">Avec ou sans note</option>
       <option value="avec">Avec note AlloCiné</option>
       <option value="sans">Sans note AlloCiné</option>
+      <option value="ecart">Note AlloCiné absente ou différente dans Jellyfin</option>
     </select>
     <select id="sort" title="Ordre d'affichage">
       <option value="titre">Tri : titre A → Z</option>
@@ -251,6 +255,11 @@ function aUneNote(it) {
   return !!(it.allocine && it.allocine.trouve);
 }
 
+// La note AlloCiné est connue mais Jellyfin ne la contient pas (ou contient autre chose).
+function aCorriger(it) {
+  return it.jellyfin_etat === 'absente' || it.jellyfin_etat === 'different';
+}
+
 function filterItems(items, f) {
   const q = normalize((f.q || '').trim());
   return items.filter((it) => {
@@ -258,6 +267,7 @@ function filterItems(items, f) {
     if (q && !normalize(it.titre).includes(q)) return false;
     if (f.note === 'avec' && !aUneNote(it)) return false;
     if (f.note === 'sans' && aUneNote(it)) return false;
+    if (f.note === 'ecart' && !aCorriger(it)) return false;
     return true;
   });
 }
@@ -297,11 +307,30 @@ function noteBadgesHtml(allocine) {
   return html || '<span class="badge muted">Note inconnue</span>';
 }
 
+function fmtJf(community, critic) {
+  const c = community == null ? '—' : Number(community).toFixed(1);
+  const k = critic == null ? '—' : Math.round(Number(critic)) + ' %';
+  return `${c} · ${k}`;
+}
+
+// Ce que Jellyfin contient réellement, comparé à la note AlloCiné connue.
+function jellyfinLineHtml(item) {
+  const a = item.allocine;
+  if (!item.jellyfin_etat || !a) return '';
+  const attendu = fmtJf(
+    a.note_spectateurs == null ? null : a.note_spectateurs * 2,
+    a.note_presse == null ? null : a.note_presse * 20);
+  const reel = fmtJf(item.jellyfin_community_rating, item.jellyfin_critic_rating);
+  if (item.jellyfin_etat === 'a_jour') return `<div class="jf-line ok">✓ Dans Jellyfin : ${reel}</div>`;
+  if (item.jellyfin_etat === 'absente') return `<div class="jf-line warn">⚠ Absente de Jellyfin (attendu ${attendu})</div>`;
+  return `<div class="jf-line warn">⚠ Jellyfin contient ${reel} (attendu ${attendu})</div>`;
+}
+
 function cardHtml(item) {
   const icon = item.type === 'serie' ? '📺' : '🎬';
   const fallback = `<div class="poster-placeholder">${icon}</div>`;
   const posterHtml = item.a_une_affiche
-    ? `<img class="poster" src="/jellyfin/image/${encodeURIComponent(item.id)}?w=400" loading="lazy" alt="Affiche de ${escapeHtml(item.titre)}" onerror="this.outerHTML='<div class=&quot;poster-placeholder&quot;>${icon}</div>'">`
+    ? `<img class="poster" src="/jellyfin/image/${encodeURIComponent(item.id)}?w=400${item.poster_tag ? '&amp;tag=' + encodeURIComponent(item.poster_tag) : ''}" loading="lazy" alt="Affiche de ${escapeHtml(item.titre)}" onerror="this.outerHTML='<div class=&quot;poster-placeholder&quot;>${icon}</div>'">`
     : fallback;
   const url = item.allocine && item.allocine.url_fiche;
   const titreHtml = url
@@ -317,6 +346,7 @@ function cardHtml(item) {
         <h2>${titreHtml}</h2>
         <div class="meta-line"><span class="type-badge">${typeLabel}</span>${anneeTxt}${genresTxt}</div>
         <div class="notes">${noteBadgesHtml(item.allocine)}</div>
+        ${jellyfinLineHtml(item)}
         ${item.synopsis ? `<div class="synopsis">${escapeHtml(item.synopsis)}</div>` : ''}
       </div>
     </div>`;
@@ -338,9 +368,11 @@ function render() {
   const f = readFilters();
   const shown = sortItems(filterItems(allItems, f), f.sort);
   const avecNote = allItems.filter(aUneNote).length;
+  const aCorr = allItems.filter(aCorriger).length;
 
   document.getElementById('status-bar').textContent =
-    `${shown.length} / ${allItems.length} élément(s) affiché(s) — ${avecNote} avec une note AlloCiné connue`;
+    `${shown.length} / ${allItems.length} élément(s) affiché(s) — ${avecNote} avec une note AlloCiné connue` +
+    (avecNote ? `, dont ${aCorr} absente(s) ou différente(s) dans Jellyfin` : '');
 
   document.getElementById('content').className = '';
   document.getElementById('content').innerHTML = shown.length

@@ -103,6 +103,17 @@ JELLYFIN_USER_ID = os.getenv("JELLYFIN_USER_ID", "")
 # insensible à la casse appliquée au nom ; laisser vide pour désactiver.
 JELLYFIN_IGNORE_REGEX = os.getenv("JELLYFIN_IGNORE_REGEX", r"\s[-–—]\s*Saga\s*$")
 
+# --- Cache disque des affiches Jellyfin ---
+# Les affiches récupérées via /jellyfin/image/{id} sont gardées dans ce dossier
+# (le volume de données, donc elles survivent aux redémarrages) : une affiche
+# déjà vue ne redéclenche AUCUNE requête vers Jellyfin. Vide = cache désactivé.
+POSTER_CACHE_DIR = os.getenv("POSTER_CACHE_DIR", "/app/data/posters")
+# Durée de validité (jours) d'une affiche demandée SANS identifiant de version
+# (usage direct de l'API). La page /bibliotheque, elle, fournit le tag d'image
+# de Jellyfin : l'entrée est alors valable indéfiniment, et remplacée d'elle-même
+# quand l'affiche change côté Jellyfin.
+POSTER_CACHE_TTL_DAYS = _env_float("POSTER_CACHE_TTL_DAYS", 7.0)
+
 def jellyfin_configured() -> bool:
     return bool(JELLYFIN_URL and JELLYFIN_API_KEY)
 

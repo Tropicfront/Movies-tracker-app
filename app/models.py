@@ -39,7 +39,14 @@ class ItemBibliotheque(BaseModel):
     genres: List[str] = []
     synopsis: Optional[str] = None
     a_une_affiche: bool = False  # sert à savoir s'il faut appeler /jellyfin/image/{id}
+    poster_tag: Optional[str] = None  # version de l'affiche (change si l'affiche change) : clé du cache
     allocine: Optional[NoteAlloCine] = None
+    # Ce que Jellyfin contient réellement MAINTENANT (lu dans la liste, pas supposé)
+    jellyfin_community_rating: Optional[float] = None  # /10
+    jellyfin_critic_rating: Optional[float] = None     # /100
+    # Comparaison avec la note AlloCiné connue : "a_jour" | "different" | "absente",
+    # ou null s'il n'y a aucune note AlloCiné à comparer.
+    jellyfin_etat: Optional[str] = None
 
 
 class StatutScraping(BaseModel):
@@ -54,5 +61,7 @@ class StatutSyncJellyfin(BaseModel):
     derniere_sync: Optional[str] = None
     nb_items_bibliotheque: int = 0
     nb_notes_appliquees: int = 0
+    # Jellyfin a répondu "OK" mais, relue juste après, la note n'est PAS enregistrée
+    nb_non_persistees: int = 0
     nb_non_trouves: int = 0
     erreurs: List[str] = []

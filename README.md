@@ -64,7 +64,8 @@ Après **chaque mise à jour du code**, reconstruisez l'image puis recréez le c
 | POST | `/jellyfin/push-cached-notes` | Écrit vers Jellyfin les notes déjà en cache, sans aucune requête AlloCiné |
 | GET | `/jellyfin/statut` | Statut de la dernière synchro Jellyfin |
 | GET | `/jellyfin/library` | Films/séries Jellyfin + note AlloCiné en cache (JSON, alimente `/bibliotheque`) |
-| GET | `/jellyfin/image/{id}[?w=400]` | Affiche d'un item Jellyfin (proxy authentifié, redimensionnée) |
+| GET | `/jellyfin/image/{id}[?w=400][&tag=…]` | Affiche d'un item Jellyfin (proxy authentifié, redimensionnée, **gardée sur disque**) |
+| GET / DELETE | `/jellyfin/image-cache` | Nombre d'affiches en cache et espace disque / vider ce cache |
 | GET | `/calendar.ics` | Flux iCal des films à l'affiche présents dans votre bibliothèque Jellyfin |
 
 ## Page « Bibliothèque Jellyfin »
@@ -248,6 +249,57 @@ Les trois opérations Jellyfin (`sync-notes`, `push-cached-notes`, et la synchro
 partagent le même verrou : une seule à la fois peut tourner, les autres sont ignorées tant qu'elle n'est
 pas terminée (suivre l'avancement via `GET /jellyfin/statut`).
 
+## Diagnostic Jellyfin : titres manquants et notes absentes
+
+Au démarrage de la synchro, le log donne le détail de ce qui a été lu dans Jellyfin. Comparez avec les
+chiffres de votre tableau de bord Jellyfin :
+
+```
+Bibliothèque Jellyfin : 527 film(s) + 160 série(s) = 687 titre(s) retenu(s).
+Recoupement OK : Jellyfin annonce 527 film(s) et 160 série(s).
+```
+
+### Il manque des films
+
+**Cause constatée** : par défaut, Jellyfin peut **masquer les films d'une collection derrière la collection
+elle-même** (paramètre `collapseBoxSetItems`). Une bibliothèque rangée en sagas (« Alien - Saga »…) perd alors
+tous les films de ces sagas dans la liste. Symptôme dans les logs : des `BoxSet` renvoyés alors qu'on ne demande
+que des films et des séries. L'application désactive ce repliage (`CollapseBoxSetItems=false`) et, si le
+serveur renvoie malgré tout des collections, **ouvre chacune** pour en récupérer les membres.
+
+Si le log affiche encore `Jellyfin annonce X film(s)… mais seuls Y ont pu être récupérés`, l'écart vient d'ailleurs :
+`JELLYFIN_USER_ID` aux droits restreints (essayez sans), contrôle parental, ou bibliothèque non accessible à la clé
+API. Le compte annoncé par Jellyfin est **indicatif** : il peut différer de celui de son interface.
+
+### Les logs disent « mis à jour » mais rien n'apparaît dans Jellyfin
+
+Une réponse HTTP positive ne prouve pas que la note est enregistrée. Après chaque écriture, l'application
+**relit l'item** et compare. Trois cas, chacun avec son message :
+
+- **`redirection HTTP 301 vers …`** : `JELLYFIN_URL` est redirigé (typiquement `http://` vers `https://`, ou un
+  proxy qui impose un chemin). Un client HTTP qui suit la redirection transforme le POST en GET et abandonne le
+  corps : réponse « OK », **rien d'écrit**. Les lectures fonctionnent malgré tout, d'où une liste correcte et des
+  notes absentes. Mettez l'URL **finale** (celle que vous tapez dans votre navigateur) dans `JELLYFIN_URL`.
+- **`Jellyfin NE CONSERVE PAS la note … envoyé 7.0, relu None`** : Jellyfin a accepté puis ignoré ou écrasé la
+  valeur. Compté dans `nb_non_persistees` (`/jellyfin/statut`, et un bandeau rouge sur la page d'accueil).
+- **`relecture impossible`** : l'écriture a été acceptée mais n'a pas pu être vérifiée.
+
+La page `/bibliotheque` affiche pour chaque titre ce que Jellyfin contient **réellement** (et non ce qu'on lui a
+envoyé) : `✓ Dans Jellyfin : …`, `⚠ Absente de Jellyfin (attendu …)`, ou `⚠ Jellyfin contient … (attendu …)` (Jellyfin a mis une autre note par-dessus).
+Dans l'interface web de Jellyfin, la note communautaire (★) et la note critique s'affichent sur la **page de
+détail** du film, pas sur les vignettes de la grille.
+
+**Garde-fous** : une écriture n'est jamais envoyée si Jellyfin renvoie, pour un film, une autre fiche que celle
+demandée (par exemple la collection qui le contient) : ses données écraseraient celles du film.
+
+### Affiches
+
+Les affiches sont servies par l'application (`/jellyfin/image/{id}`) et **gardées sur disque** dans le volume de
+données : une affiche déjà vue n'entraîne **aucune requête** vers Jellyfin, même s'il est éteint. La clé de cache
+inclut le `tag` d'image de Jellyfin, qui change quand l'affiche change : l'entrée se renouvelle d'elle-même et
+l'ancienne version est supprimée. La largeur demandée est arrondie à un palier (200, 300, 400, 600, 800, 1000 px)
+pour que l'espace disque reste borné. `GET /jellyfin/image-cache` donne le nombre de fichiers et la taille.
+
 ## Les notes n'apparaissent pas dans Jellyfin malgré des logs "mis à jour"
 
 Comportement Jellyfin connu et documenté (pas propre à ce projet) : une mise à jour de champ envoyée
@@ -320,6 +372,8 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `ALLOCINE_CACHE_PATH` | `/app/data/allocine_cache.json` | Fichier de cache des résultats AlloCiné (recherche + note par titre) |
 | `ALLOCINE_CACHE_TTL_DAYS` | `30` | Durée de validité d'une entrée du cache, en jours. `<= 0` désactive le cache |
 | `JELLYFIN_IGNORE_REGEX` | `\s[-–—]\s*Saga\s*$` | Éléments Jellyfin ignorés (regex, insensible à la casse, appliquée au nom). Par défaut les regroupements « … - Saga » ; les collections (BoxSet) sont toujours exclues. Vide = désactivé |
+| `POSTER_CACHE_DIR` | `/app/data/posters` | Dossier du cache disque des affiches Jellyfin (dans le volume de données). Vide = cache désactivé |
+| `POSTER_CACHE_TTL_DAYS` | `7` | Durée de validité (jours) d'une affiche demandée **sans** `tag`. La page `/bibliotheque` envoie le `tag` de Jellyfin : l'entrée est alors valable indéfiniment et se renouvelle d'elle-même si l'affiche change |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |
 
 ## Structure du projet

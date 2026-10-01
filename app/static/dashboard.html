@@ -338,7 +338,10 @@ function jellyfinStatusHtml(s) {
     return ` · Jellyfin : <b>synchronisation en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
   }
   if (s.derniere_sync) {
-    return ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées (${fmtDate(s.derniere_sync)})`;
+    const refusees = s.nb_non_persistees
+      ? ` · <span class="err">⚠ ${s.nb_non_persistees} note(s) acceptée(s) puis NON conservée(s) par Jellyfin</span>`
+      : '';
+    return ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées et relues (${fmtDate(s.derniere_sync)})${refusees}`;
   }
   return '';
 }
