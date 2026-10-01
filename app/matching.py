@@ -19,7 +19,7 @@ import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 from app.config import TITLE_ALIASES_PATH, TITLE_MATCH_THRESHOLD
 
@@ -102,3 +102,37 @@ def titles_match(
 
     ratio = SequenceMatcher(None, norm_a, norm_b).ratio()
     return ratio >= threshold
+
+
+# Année entre parenthèses en fin de titre : "Macross (1982)", "Cobra (1982)".
+# Bornes larges (1900-2100) pour éviter de confondre avec un numéro de tome/
+# saison écrit par erreur entre parenthèses (ex. improbable "Film (2)").
+_YEAR_IN_TITLE_RE = re.compile(r"\s*\((\d{4})\)\s*$")
+
+
+def extract_year_from_title(titre: str) -> Tuple[str, Optional[int]]:
+    """
+    Extrait une année placée entre parenthèses en fin de titre (convention
+    fréquente côté Jellyfin, notamment pour les animes/séries avec homonymes :
+    "Macross (1982)", "Cobra (1982)"). Retourne (titre_nettoyé, année) si une
+    année plausible est trouvée, sinon (titre_original, None) — dans ce
+    dernier cas, le titre retourné est TOUJOURS strictement identique à
+    l'original (aucune modification), pour ne jamais perturber un appelant
+    qui ne s'attend pas à un nettoyage.
+
+    Le titre nettoyé (sans le "(YYYY)") est celui à utiliser pour la
+    recherche AlloCiné : la parenthèse gênerait la recherche en texte libre,
+    et ne correspond à aucune convention de titre côté AlloCiné.
+    """
+    m = _YEAR_IN_TITLE_RE.search(titre)
+    if not m:
+        return titre, None
+    year = int(m.group(1))
+    if not (1900 <= year <= 2100):
+        return titre, None
+    cleaned = titre[:m.start()].rstrip()
+    if not cleaned:
+        # Cas limite improbable ("(1982)" seul comme titre) : mieux vaut
+        # garder l'original tel quel que de chercher une chaîne vide.
+        return titre, None
+    return cleaned, year

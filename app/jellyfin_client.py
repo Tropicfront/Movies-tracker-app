@@ -24,7 +24,7 @@ avec uniquement les deux champs de note modifiés.
 import logging
 import re
 from collections import Counter
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -71,6 +71,16 @@ def get_library_items() -> List[dict]:
     Récupère les films et séries de la bibliothèque Jellyfin.
     Retourne une liste de dicts avec au moins: Id, Name, Type.
 
+    Paginé explicitement (StartIndex/Limit), plutôt que de se fier au
+    comportement par défaut de l'API quand ces paramètres sont omis : ce
+    comportement diffère selon les endpoints et les versions de Jellyfin (par
+    exemple, certains endpoints appliquent une limite implicite de quelques
+    dizaines d'éléments sans qu'on l'ait demandé). Sans pagination explicite,
+    une bibliothèque de plusieurs centaines d'items risque d'être tronquée
+    silencieusement — c'est exactement ce qui a été constaté (445 items
+    traités pour 686 attendus). La boucle s'arrête sur TotalRecordCount, la
+    valeur faisant foi renvoyée par le serveur.
+
     Les collections (BoxSet) et les éléments dont le nom correspond à
     JELLYFIN_IGNORE_REGEX (par défaut les regroupements "… - Saga") sont
     exclus : ils n'ont pas de fiche AlloCiné précise et recevraient une note
@@ -79,17 +89,80 @@ def get_library_items() -> List[dict]:
     if not JELLYFIN_URL or not JELLYFIN_API_KEY:
         raise JellyfinError("JELLYFIN_URL / JELLYFIN_API_KEY non configurés")
 
-    params = {
-        "IncludeItemTypes": "Movie,Series",
-        "ExcludeItemTypes": "BoxSet",
-        "Recursive": "true",
-        "Fields": "ProviderIds",
-    }
-    resp = requests.get(
-        _items_base_url(), headers=_headers(), params=params, timeout=REQUEST_TIMEOUT
+    page_size = 200
+    items: List[dict] = []
+    start_index = 0
+    total_record_count: Optional[int] = None
+
+    while True:
+        params = {
+            "IncludeItemTypes": "Movie,Series",
+            "ExcludeItemTypes": "BoxSet",
+            "Recursive": "true",
+            "Fields": "ProviderIds,Overview,Genres,ImageTags",
+            # Tri DÉTERMINISTE obligatoire avec StartIndex/Limit : sans ordre
+            # stable, deux pages successives peuvent se chevaucher ou laisser
+            # des trous (un item apparaît deux fois, un autre jamais). C'est
+            # le tri que Jellyfin utilise lui-même pour paginer ses écrans.
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+            # On n'a besoin que de l'affiche principale : évite de renvoyer
+            # les étiquettes de toutes les autres images (fond, logo...).
+            "EnableImages": "true",
+            "ImageTypeLimit": 1,
+            "EnableImageTypes": "Primary",
+            "StartIndex": start_index,
+            "Limit": page_size,
+        }
+        resp = requests.get(
+            _items_base_url(), headers=_headers(), params=params, timeout=REQUEST_TIMEOUT
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        page_items = data.get("Items", [])
+        total_record_count = data.get("TotalRecordCount", total_record_count)
+
+        items.extend(page_items)
+        logger.debug(
+            "Page Jellyfin: %d item(s) reçu(s) (StartIndex=%d), total annoncé=%s, cumul=%d",
+            len(page_items), start_index, total_record_count, len(items),
+        )
+
+        if not page_items:
+            break  # sécurité : page vide, on arrête même si TotalRecordCount dit autre chose
+        start_index += len(page_items)
+        if total_record_count is not None and start_index >= total_record_count:
+            break
+
+    # Garde-fou : même avec un tri, un item ajouté/supprimé pendant la lecture
+    # peut décaler les pages. On ne garde qu'une occurrence par Id.
+    vus: set = set()
+    uniques: List[dict] = []
+    for it in items:
+        it_id = it.get("Id")
+        if it_id in vus:
+            continue
+        vus.add(it_id)
+        uniques.append(it)
+    if len(uniques) != len(items):
+        logger.warning(
+            "%d doublon(s) retiré(s) de la liste Jellyfin (bibliothèque modifiée pendant la lecture ?).",
+            len(items) - len(uniques),
+        )
+    items = uniques
+
+    if total_record_count is not None and len(items) != total_record_count:
+        logger.warning(
+            "Jellyfin a annoncé %d item(s) au total mais %d ont été effectivement récupérés "
+            "après pagination : une bibliothèque a peut-être changé pendant la lecture.",
+            total_record_count, len(items),
+        )
+    logger.info(
+        "Bibliothèque Jellyfin : %d film(s)/série(s) récupéré(s) (sur %s annoncé(s) par le serveur, "
+        "%d page(s) de %d).",
+        len(items), total_record_count if total_record_count is not None else "?",
+        (start_index // page_size) + (1 if start_index % page_size else 0), page_size,
     )
-    resp.raise_for_status()
-    items = resp.json().get("Items", [])
 
     ignore = re.compile(JELLYFIN_IGNORE_REGEX, re.IGNORECASE) if JELLYFIN_IGNORE_REGEX else None
     kept: List[dict] = []
@@ -109,6 +182,10 @@ def get_library_items() -> List[dict]:
             len(ignored), JELLYFIN_IGNORE_REGEX, types,
             ", ".join(repr(i.get("Name")) for i in ignored[:5]),
         )
+    logger.info(
+        "Bibliothèque Jellyfin : %d film(s)/série(s) retenu(s) après filtrage (sur %d récupéré(s)).",
+        len(kept), len(items),
+    )
     return kept
 
 
@@ -189,3 +266,46 @@ def update_item_ratings(
         )
         return False
     return True
+
+
+def get_item_image(
+    item_id: str, image_type: str = "Primary", max_width: Optional[int] = None
+) -> Optional[Tuple[bytes, str]]:
+    """
+    Récupère l'image (par défaut : affiche/poster) d'un item Jellyfin.
+
+    Les images Jellyfin ne sont pas forcément accessibles publiquement sans
+    authentification selon la configuration du serveur ; cette fonction sert
+    donc de proxy authentifié (voir GET /jellyfin/image/{item_id} dans
+    main.py), plutôt que de construire une URL Jellyfin directe côté
+    navigateur — qui échouerait aussi si JELLYFIN_URL n'est joignable que
+    depuis le conteneur (ex. nom d'hôte Docker interne).
+
+    :param max_width: largeur maximale demandée à Jellyfin, qui redimensionne
+        lui-même l'image (paramètre maxWidth). Indispensable pour une grille de
+        plusieurs centaines d'affiches : l'original fait souvent plusieurs
+        centaines de Ko à plusieurs Mo, alors qu'une carte en affiche ~250 px.
+
+    Retourne (contenu_binaire, content_type) ou None si l'item n'a pas
+    d'image de ce type (404 côté Jellyfin, traité comme un cas normal, pas
+    une erreur).
+    """
+    if not JELLYFIN_URL or not JELLYFIN_API_KEY:
+        raise JellyfinError("JELLYFIN_URL / JELLYFIN_API_KEY non configurés")
+
+    params = {}
+    if max_width:
+        params["maxWidth"] = int(max_width)
+        params["quality"] = 85
+
+    resp = requests.get(
+        f"{JELLYFIN_URL}/Items/{item_id}/Images/{image_type}",
+        headers=_headers(),
+        params=params,
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "image/jpeg")
+    return resp.content, content_type

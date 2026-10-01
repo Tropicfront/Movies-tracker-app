@@ -42,7 +42,7 @@ from app.config import (
     DEBUG_SAVE_HTML,
     DEBUG_DATA_DIR,
 )
-from app.matching import normalize_title
+from app.matching import normalize_title, extract_year_from_title
 from app.ratelimit import wait_for_slot
 from app import allocine_cache
 from app.models import NoteAlloCine
@@ -289,6 +289,43 @@ def _extract_notes(soup: BeautifulSoup) -> tuple[Optional[float], Optional[float
     return note_presse, note_spectateurs
 
 
+def _resolve_query(titre: str, annee: Optional[int]) -> tuple:
+    """
+    Résout le couple (titre de recherche, année effective) UNIQUE utilisé par
+    tout ce qui lit ou écrit le cache AlloCiné : si le titre se termine par
+    une année entre parenthèses ("Macross (1982)"), elle est extraite et la
+    parenthèse retirée ; l'année fournie explicitement (ex. ProductionYear
+    Jellyfin) reste prioritaire sur celle du titre.
+
+    Centralisé ici pour que l'écriture (get_note_allocine) et toutes les
+    lectures (get_cached_note_allocine) construisent EXACTEMENT la même clé :
+    une lecture qui utiliserait le titre brut ne retrouverait jamais l'entrée
+    écrite sous le titre nettoyé.
+    """
+    titre_recherche, annee_du_titre = extract_year_from_title(titre)
+    if annee_du_titre is not None and annee is not None and annee_du_titre != annee:
+        logger.debug(
+            "Année du titre (%d) et année fournie (%d) diffèrent pour '%s' : l'année fournie "
+            "est prioritaire (généralement plus fiable, ex. ProductionYear Jellyfin).",
+            annee_du_titre, annee, titre,
+        )
+    return titre_recherche, (annee if annee is not None else annee_du_titre)
+
+
+def get_cached_note_allocine(
+    titre: str, type_: str = "film", annee: Optional[int] = None
+) -> Optional[NoteAlloCine]:
+    """
+    Lecture PURE du cache AlloCiné pour un titre Jellyfin (jamais de requête
+    réseau) : retourne la note en cache si elle existe et est valide, sinon
+    None. À utiliser pour tout ce qui ne doit pas déclencher de recherche
+    (application du cache vers Jellyfin, page bibliothèque...), à la place de
+    allocine_cache.get_cached(), qui exige un titre déjà nettoyé.
+    """
+    titre_recherche, annee_effective = _resolve_query(titre, annee)
+    return allocine_cache.get_cached(titre_recherche, type_, annee_effective)
+
+
 def get_note_allocine(
     titre: str, type_: str = "film", annee: Optional[int] = None, force_refresh: bool = False
 ) -> NoteAlloCine:
@@ -296,26 +333,39 @@ def get_note_allocine(
     Récupère les notes AlloCiné (presse et spectateurs) pour un film ou une
     série, à partir de son titre.
 
-    Le résultat (trouvé ou non) est mis en cache sur disque
+    Seuls les résultats TROUVÉS sont mis en cache sur disque
     (ALLOCINE_CACHE_PATH, valable ALLOCINE_CACHE_TTL_DAYS jours) : un titre
     déjà résolu lors d'une synchro précédente ne redéclenche aucune requête
-    tant que le cache est valide.
+    tant que le cache est valide ; un titre non trouvé est toujours
+    recherché à nouveau.
 
-    :param titre: Titre du film ou de la série
+    Si le titre se termine par une année entre parenthèses (convention
+    fréquente côté Jellyfin pour distinguer des homonymes, ex.
+    "Macross (1982)"), elle est extraite : la recherche AlloCiné utilise le
+    titre sans la parenthèse (la parenthèse gênerait la recherche en texte
+    libre), et cette année sert de la même façon que le paramètre `annee`
+    pour départager les homonymes (voir _find_fiche_url). Si `annee` est
+    fourni explicitement ET qu'une année est aussi trouvée dans le titre, le
+    paramètre explicite est prioritaire (plus probablement fiable :
+    généralement `ProductionYear` depuis Jellyfin).
+
+    :param titre: Titre du film ou de la série, avec ou sans année entre parenthèses
     :param type_: "film" ou "serie"
     :param annee: année de production (ex. depuis Jellyfin) pour départager les homonymes
     :param force_refresh: ignore le cache et refait la recherche, même si une
         entrée valide existe (utile pour un titre précis via /allocine/note ;
         pour toute la bibliothèque, voir POST /jellyfin/sync-notes?force_refresh=true)
     """
+    titre, annee_effective = _resolve_query(titre, annee)
+
     if not force_refresh:
-        cached = allocine_cache.get_cached(titre, type_, annee)
+        cached = allocine_cache.get_cached(titre, type_, annee_effective)
         if cached is not None:
             logger.debug("Cache AlloCiné : résultat réutilisé pour '%s' (%s)", titre, type_)
             return cached
 
-    note = _fetch_note_allocine(titre, type_, annee)
-    allocine_cache.set_cached(titre, type_, note, annee)
+    note = _fetch_note_allocine(titre, type_, annee_effective)
+    allocine_cache.set_cached(titre, type_, note, annee_effective)
     return note
 
 

@@ -52,6 +52,7 @@ Après **chaque mise à jour du code**, reconstruisez l'image puis recréez le c
 | Méthode | Route | Description |
 |---|---|---|
 | GET | `/` | **Page web** : films, affiches, notes, séances, statuts, boutons d'action |
+| GET | `/bibliotheque` | **Page web** : films et séries de votre bibliothèque Jellyfin, avec affiches et notes AlloCiné |
 | GET | `/health` | Vérifie que le service tourne |
 | GET | `/statut` | Date du dernier scraping, nb de films, erreurs |
 | POST | `/refresh` | Relance manuellement le scraping AlloCiné |
@@ -59,9 +60,33 @@ Après **chaque mise à jour du code**, reconstruisez l'image puis recréez le c
 | GET | `/films/{slug}` | Détail d'un film (séances, synopsis, note...) |
 | GET | `/allocine/note?titre=...&type=film\|serie[&annee=...][&force_refresh=true]` | Note AlloCiné pour n'importe quel titre |
 | DELETE | `/allocine/cache` | Vide le cache des résultats AlloCiné |
-| POST | `/jellyfin/sync-notes[?force_refresh=true]` | Relance la synchro des notes AlloCiné → Jellyfin |
+| POST | `/jellyfin/sync-notes[?force_refresh=true]` | Relance la synchro (rescan complet AlloCiné + Jellyfin si `force_refresh=true`) |
+| POST | `/jellyfin/push-cached-notes` | Écrit vers Jellyfin les notes déjà en cache, sans aucune requête AlloCiné |
 | GET | `/jellyfin/statut` | Statut de la dernière synchro Jellyfin |
+| GET | `/jellyfin/library` | Films/séries Jellyfin + note AlloCiné en cache (JSON, alimente `/bibliotheque`) |
+| GET | `/jellyfin/image/{id}[?w=400]` | Affiche d'un item Jellyfin (proxy authentifié, redimensionnée) |
 | GET | `/calendar.ics` | Flux iCal des films à l'affiche présents dans votre bibliothèque Jellyfin |
+
+## Page « Bibliothèque Jellyfin »
+
+`http://<hôte>:8095/bibliotheque` (bouton **📚 Bibliothèque Jellyfin** sur la page d'accueil) affiche vos
+films et séries Jellyfin comme la page des films à l'affiche : affiche, titre (cliquable vers la fiche
+AlloCiné quand elle est connue), type, année, genres, notes **Presse** / **Spectateurs** sur 5, synopsis.
+
+- **Filtres** : recherche par titre (insensible à la casse **et aux accents** : `amelie` trouve « Amélie »),
+  films / séries, avec ou sans note AlloCiné (pratique pour repérer les titres non trouvés).
+- **Tri** : titre, plus récents / plus anciens, meilleure note spectateurs, meilleure note presse. Les
+  éléments sans valeur (année ou note inconnue) sont toujours placés en dernier.
+- **Les notes viennent du cache local**, jamais d'une recherche en direct : ouvrir la page ne déclenche
+  aucune requête vers AlloCiné. Un titre jamais résolu s'affiche « Note inconnue » ; lancez une synchro
+  (🔄 / 🔁 sur la page d'accueil) pour les récupérer.
+- **Affiches** : servies par l'application (`/jellyfin/image/{id}`), qui les récupère avec la clé API et les
+  fait **redimensionner par Jellyfin** (`?w=`, 400 px par défaut, borné entre 100 et 1000) : les afficher en
+  taille d'origine pour des centaines de titres serait très lourd. Le navigateur n'a ainsi jamais besoin
+  d'accéder directement à Jellyfin ni de connaître la clé API.
+- Si Jellyfin n'est pas configuré, la page l'indique au lieu d'afficher une erreur technique.
+- Le titre affiché est celui de Jellyfin **sans** l'année entre parenthèses (`Macross (1982)` → `Macross`,
+  année 1982 dans sa propre colonne).
 
 ## Intégration Jellyfin
 
@@ -80,6 +105,13 @@ La mise à jour récupère toujours l'item Jellyfin complet avant de le renvoyer
 deux champs de note modifiés (pour éviter un bug connu de Jellyfin où un envoi partiel peut
 corrompre les métadonnées d'un item).
 
+**Homonymes** (plusieurs films/séries portant le même titre côté AlloCiné, ex. deux "Macross" ou
+deux "Apocalypse Now" d'années différentes) : départagés par année. La source privilégiée est
+`ProductionYear` tel que renvoyé par Jellyfin ; si le titre lui-même se termine par une année entre
+parenthèses (convention fréquente pour les animes/séries, ex. `Macross (1982)`), cette année sert de
+repli — la parenthèse est retirée du titre avant la recherche (elle gênerait une recherche en texte
+libre). Si les deux sources existent et diffèrent, `ProductionYear` est prioritaire.
+
 > **Synchro Jellyfin en arrière-plan** : elle dure plusieurs minutes (une requête AlloCiné par titre, avec pause). Elle ne bloque donc ni le démarrage ni la page web : l'API et le dashboard répondent immédiatement, et l'avancement est visible sur le dashboard ou via `GET /jellyfin/statut` (`en_cours`, `nb_traites`, `nb_items_bibliotheque`). `POST /jellyfin/sync-notes` rend la main tout de suite et ne lance pas de seconde synchro si une tourne déjà.
 
 ### Déboguer Jellyfin
@@ -88,6 +120,13 @@ corrompre les métadonnées d'un item).
 - Bibliothèque vide ou incomplète : certaines versions de Jellyfin exigent un identifiant
   utilisateur pour lister les items. Renseignez alors `JELLYFIN_USER_ID` (visible dans
   Dashboard → Utilisateurs, dans l'URL du profil) dans `.env`.
+- **Bibliothèque tronquée** (ex. 445 items traités alors que Jellyfin en affiche 686) : corrigé.
+  `get_library_items()` paginait implicitement en se fiant au comportement par défaut de l'API
+  quand `StartIndex`/`Limit` ne sont pas fournis — ce comportement varie selon les versions de
+  Jellyfin. La pagination est désormais explicite (boucle jusqu'à `TotalRecordCount`, triée par nom pour qu'aucune page ne chevauche la suivante), donc plus
+  aucune bibliothèque ne devrait être tronquée quelle que soit sa taille. Le log de démarrage
+  indique désormais le nombre total récupéré (`GET /jellyfin/statut` après le prochain scan, ou
+  directement dans les logs du conteneur : `Bibliothèque Jellyfin : N film(s)/série(s) récupéré(s)`).
 - `GET /jellyfin/statut` donne le détail des erreurs (par titre) après une synchro.
 
 ## Calendrier pour Homepage / Homarr
@@ -189,13 +228,25 @@ cours de diffusion...), et il serait dommage de rester bloqué sur un "non trouv
 
 - `ALLOCINE_CACHE_TTL_DAYS` (défaut `30`) : durée de validité d'une entrée **trouvée**, en jours. `0`
   ou moins désactive complètement le cache (chaque synchro refait tout, y compris les titres trouvés).
-- Bouton **🔁 Rescan complet** sur le dashboard (ou `POST /jellyfin/sync-notes?force_refresh=true`) :
-  ignore le cache pour cette synchro et recherche TOUS les titres à nouveau, y compris ceux déjà en
-  cache — utile en cas de doute sur des notes existantes (ex. après une correction de la logique de
-  correspondance). Sensiblement plus lent qu'une synchro normale ; une confirmation est demandée avant
-  de lancer le rescan depuis le dashboard.
+Trois façons de forcer une mise à jour, du plus complet au plus rapide :
+
+- Bouton **🔁 Rescan complet (AlloCiné + Jellyfin)** sur le dashboard (ou
+  `POST /jellyfin/sync-notes?force_refresh=true`) : recherche TOUS les titres à nouveau sur AlloCiné (le
+  cache est ignoré, pas juste complété) ET réécrit TOUS les items Jellyfin correspondants, même ceux qui
+  ont déjà une note à jour. L'opération la plus lente et la plus complète des trois — utile en cas de
+  doute sur des notes existantes (ex. après une correction de la logique de correspondance). Une
+  confirmation est demandée avant de lancer depuis le dashboard.
+- Bouton **📤 Appliquer le cache à Jellyfin** sur le dashboard (ou `POST /jellyfin/push-cached-notes`) :
+  n'interroge **jamais** AlloCiné. Écrit vers Jellyfin les notes déjà présentes dans le cache ; les
+  titres sans entrée de cache sont ignorés (ni recherchés, ni modifiés). Quasi instantané. Utile par
+  exemple juste après avoir corrigé un problème côté Jellyfin (comme le bug de verrouillage plus bas) :
+  les notes déjà connues sont réappliquées sans attendre une nouvelle synchro complète.
 - `DELETE /allocine/cache` : vide le cache entièrement.
-- `GET /allocine/note?...&force_refresh=true` : idem pour un seul titre, sans passer par une synchro.
+- `GET /allocine/note?...&force_refresh=true` : force_refresh pour un seul titre, sans passer par Jellyfin.
+
+Les trois opérations Jellyfin (`sync-notes`, `push-cached-notes`, et la synchro automatique au démarrage)
+partagent le même verrou : une seule à la fois peut tourner, les autres sont ignorées tant qu'elle n'est
+pas terminée (suivre l'avancement via `GET /jellyfin/statut`).
 
 ## Les notes n'apparaissent pas dans Jellyfin malgré des logs "mis à jour"
 

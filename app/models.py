@@ -30,6 +30,18 @@ class Film(BaseModel):
     allocine: Optional[NoteAlloCine] = None
 
 
+class ItemBibliotheque(BaseModel):
+    """Un film ou une série de la bibliothèque Jellyfin, avec sa note AlloCiné si connue."""
+    id: str
+    titre: str
+    type: str  # "film" ou "serie"
+    annee: Optional[int] = None
+    genres: List[str] = []
+    synopsis: Optional[str] = None
+    a_une_affiche: bool = False  # sert à savoir s'il faut appeler /jellyfin/image/{id}
+    allocine: Optional[NoteAlloCine] = None
+
+
 class StatutScraping(BaseModel):
     derniere_maj: Optional[str] = None
     nb_films: int = 0

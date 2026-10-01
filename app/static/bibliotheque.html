@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bibliothèque Jellyfin — Movies Tracker</title>
+<style>
+  :root {
+    --bg: #f4f4f6;
+    --card-bg: #ffffff;
+    --text: #1a1a1e;
+    --text-muted: #6b6b74;
+    --accent: #e63946;
+    --accent-2: #1d3557;
+    --border: #e2e2e7;
+    --badge-bg: #f0f0f3;
+    --success: #2a9d5c;
+    --error: #d1495b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14141a;
+      --card-bg: #1e1e26;
+      --text: #f0f0f3;
+      --text-muted: #9a9aa5;
+      --accent: #ff6b74;
+      --accent-2: #7ba7d9;
+      --border: #2e2e38;
+      --badge-bg: #2a2a34;
+      --success: #4fbf80;
+      --error: #ff7a8a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding-bottom: 3rem;
+  }
+  header {
+    padding: 1.5rem 1.25rem 1rem;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  .subtitle { color: var(--text-muted); font-size: 0.95rem; margin: 0; }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 1rem;
+    align-items: center;
+  }
+  button, .btn, select, input[type="search"] {
+    background: var(--accent-2);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  select, input[type="search"] {
+    background: var(--card-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    cursor: text;
+  }
+  input[type="search"] { min-width: 220px; }
+  button:hover, .btn:hover { opacity: 0.88; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .status-bar {
+    max-width: 1300px;
+    margin: 0.75rem auto 0;
+    padding: 0 1.25rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .status-bar .err { color: var(--error); }
+  main {
+    max-width: 1300px;
+    margin: 1.5rem auto 0;
+    padding: 0 1.25rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .poster {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    background: var(--badge-bg);
+    display: block;
+  }
+  .poster-placeholder {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    background: var(--badge-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.4rem;
+    color: var(--text-muted);
+  }
+  .card-body {
+    padding: 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    flex: 1;
+  }
+  .card h2 a { color: var(--text); text-decoration: none; }
+  .card h2 a:hover { color: var(--accent-2); }
+  .card h2 {
+    font-size: 0.95rem;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .meta-line {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+  }
+  .type-badge {
+    display: inline-block;
+    background: var(--badge-bg);
+    border-radius: 5px;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-right: 0.35rem;
+  }
+  .notes {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .badge {
+    background: var(--badge-bg);
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.74rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .badge b { color: var(--accent); }
+  .badge.muted { color: var(--text-muted); }
+  .synopsis {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .empty, .loading {
+    color: var(--text-muted);
+    padding: 3rem 1rem;
+    text-align: center;
+  }
+  footer {
+    max-width: 1300px;
+    margin: 2.5rem auto 0;
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    justify-content: space-between;
+  }
+  footer a { color: var(--accent-2); }
+  code {
+    background: var(--badge-bg);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.82em;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📚 Bibliothèque Jellyfin</h1>
+  <p class="subtitle">Vos films et séries, avec leur note AlloCiné déjà connue</p>
+  <div class="toolbar">
+    <a class="btn" href="/">← Films à l'affiche</a>
+    <input type="search" id="search" placeholder="🔎 Rechercher un titre…">
+    <select id="type-filter">
+      <option value="">Tous types</option>
+      <option value="film">Films uniquement</option>
+      <option value="serie">Séries uniquement</option>
+    </select>
+    <select id="note-filter">
+      <option value="">Avec ou sans note</option>
+      <option value="avec">Avec note AlloCiné</option>
+      <option value="sans">Sans note AlloCiné</option>
+    </select>
+    <select id="sort" title="Ordre d'affichage">
+      <option value="titre">Tri : titre A → Z</option>
+      <option value="annee-desc">Tri : plus récents d'abord</option>
+      <option value="annee-asc">Tri : plus anciens d'abord</option>
+      <option value="spectateurs">Tri : meilleure note spectateurs</option>
+      <option value="presse">Tri : meilleure note presse</option>
+    </select>
+  </div>
+</header>
+
+<div class="status-bar" id="status-bar">Chargement…</div>
+
+<main>
+  <div id="content" class="loading">Chargement de la bibliothèque…</div>
+</main>
+
+<footer>
+  <span>Les notes proviennent du cache local de l'application, pas d'une recherche en direct sur AlloCiné.</span>
+  <span>Endpoints : <code>/jellyfin/library</code> · <code>/jellyfin/image/&lbrace;id&rbrace;</code></span>
+</footer>
+
+<script>
+// ---------- utilitaires purs (testables hors navigateur) ----------
+const HTML_ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => HTML_ESC[c]);
+}
+
+// Minuscules + sans accents : "Amélie" et "amelie" se trouvent mutuellement.
+function normalize(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function aUneNote(it) {
+  return !!(it.allocine && it.allocine.trouve);
+}
+
+function filterItems(items, f) {
+  const q = normalize((f.q || '').trim());
+  return items.filter((it) => {
+    if (f.type && it.type !== f.type) return false;
+    if (q && !normalize(it.titre).includes(q)) return false;
+    if (f.note === 'avec' && !aUneNote(it)) return false;
+    if (f.note === 'sans' && aUneNote(it)) return false;
+    return true;
+  });
+}
+
+const collator = new Intl.Collator('fr', { sensitivity: 'base', numeric: true });
+
+// Tri stable : à valeur égale (ou valeur absente) on retombe sur l'ordre alphabétique.
+// Les éléments SANS valeur (note ou année inconnue) vont toujours en dernier.
+function sortItems(items, key) {
+  const byTitle = (a, b) => collator.compare(a.titre, b.titre);
+  const noteOf = (it, field) => (aUneNote(it) && it.allocine[field] != null ? it.allocine[field] : null);
+  const withValue = (getter, dir) => (a, b) => {
+    const x = getter(a), y = getter(b);
+    if (x === null && y === null) return byTitle(a, b);
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return (dir * (x - y)) || byTitle(a, b);
+  };
+  const cmp = {
+    'annee-desc': withValue((it) => (it.annee == null ? null : it.annee), -1),
+    'annee-asc': withValue((it) => (it.annee == null ? null : it.annee), 1),
+    'spectateurs': withValue((it) => noteOf(it, 'note_spectateurs'), -1),
+    'presse': withValue((it) => noteOf(it, 'note_presse'), -1),
+  }[key] || byTitle;
+  return items.slice().sort(cmp);
+}
+
+function noteBadge(label, value) {
+  if (value === null || value === undefined) return '';
+  return `<span class="badge">${label} <b>${Number(value).toFixed(1)}</b>/5</span>`;
+}
+
+function noteBadgesHtml(allocine) {
+  const html = allocine && allocine.trouve
+    ? noteBadge('Presse', allocine.note_presse) + noteBadge('Spectateurs', allocine.note_spectateurs)
+    : '';
+  return html || '<span class="badge muted">Note inconnue</span>';
+}
+
+function cardHtml(item) {
+  const icon = item.type === 'serie' ? '📺' : '🎬';
+  const fallback = `<div class="poster-placeholder">${icon}</div>`;
+  const posterHtml = item.a_une_affiche
+    ? `<img class="poster" src="/jellyfin/image/${encodeURIComponent(item.id)}?w=400" loading="lazy" alt="Affiche de ${escapeHtml(item.titre)}" onerror="this.outerHTML='<div class=&quot;poster-placeholder&quot;>${icon}</div>'">`
+    : fallback;
+  const url = item.allocine && item.allocine.url_fiche;
+  const titreHtml = url
+    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Voir la fiche AlloCiné">${escapeHtml(item.titre)}</a>`
+    : escapeHtml(item.titre);
+  const typeLabel = item.type === 'serie' ? 'Série' : 'Film';
+  const anneeTxt = item.annee ? ` · ${item.annee}` : '';
+  const genresTxt = item.genres && item.genres.length ? ' · ' + item.genres.slice(0, 3).map(escapeHtml).join(', ') : '';
+  return `
+    <div class="card">
+      ${posterHtml}
+      <div class="card-body">
+        <h2>${titreHtml}</h2>
+        <div class="meta-line"><span class="type-badge">${typeLabel}</span>${anneeTxt}${genresTxt}</div>
+        <div class="notes">${noteBadgesHtml(item.allocine)}</div>
+        ${item.synopsis ? `<div class="synopsis">${escapeHtml(item.synopsis)}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+// ---------- page ----------
+let allItems = [];
+
+function readFilters() {
+  return {
+    q: document.getElementById('search').value,
+    type: document.getElementById('type-filter').value,
+    note: document.getElementById('note-filter').value,
+    sort: document.getElementById('sort').value,
+  };
+}
+
+function render() {
+  const f = readFilters();
+  const shown = sortItems(filterItems(allItems, f), f.sort);
+  const avecNote = allItems.filter(aUneNote).length;
+
+  document.getElementById('status-bar').textContent =
+    `${shown.length} / ${allItems.length} élément(s) affiché(s) — ${avecNote} avec une note AlloCiné connue`;
+
+  document.getElementById('content').className = '';
+  document.getElementById('content').innerHTML = shown.length
+    ? '<div class="grid">' + shown.map(cardHtml).join('') + '</div>'
+    : '<div class="empty">Aucun élément ne correspond à ce filtre.</div>';
+}
+
+async function loadLibrary() {
+  const content = document.getElementById('content');
+  const bar = document.getElementById('status-bar');
+  try {
+    const res = await fetch('/jellyfin/library');
+    if (res.status === 400) {
+      content.className = '';
+      content.innerHTML = '<div class="empty">Jellyfin n\'est pas configuré : renseignez <code>JELLYFIN_URL</code> et <code>JELLYFIN_API_KEY</code> dans l\'environnement du conteneur.</div>';
+      bar.textContent = '';
+      return;
+    }
+    if (!res.ok) throw new Error('/jellyfin/library -> HTTP ' + res.status);
+    allItems = await res.json();
+    render();
+  } catch (e) {
+    content.className = '';
+    content.innerHTML = `<div class="empty">Impossible de charger la bibliothèque Jellyfin.<br>${escapeHtml(e.message)}</div>`;
+    bar.innerHTML = `<span class="err">Erreur : ${escapeHtml(e.message)}</span>`;
+  }
+}
+
+// La saisie est « débouncée » : à chaque frappe, re-générer plusieurs centaines
+// de cartes serait saccadé sur mobile.
+let searchTimer = null;
+document.getElementById('search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(render, 150);
+});
+['type-filter', 'note-filter', 'sort'].forEach((id) =>
+  document.getElementById(id).addEventListener('change', render));
+
+loadLibrary();
+</script>
+
+</body>
+</html>

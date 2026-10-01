@@ -207,11 +207,13 @@
   <h1>🎬 Pathé Toulouse Wilson</h1>
   <p class="subtitle">Films à l'affiche aujourd'hui, séances et notes AlloCiné</p>
   <div class="toolbar">
+    <a class="btn" href="/bibliotheque">📚 Bibliothèque Jellyfin</a>
     <button id="btn-refresh" onclick="refresh()">↻ Rafraîchir les films</button>
     <a class="btn" href="/calendar.ics">📅 Flux calendrier (.ics)</a>
     <a class="btn" href="/docs">🔧 Documentation API</a>
     <button id="btn-jellyfin" onclick="syncJellyfin()" style="display:none;">🔄 Synchroniser Jellyfin</button>
-    <button id="btn-jellyfin-full" onclick="syncJellyfin(true)" style="display:none;" title="Ignore le cache : recherche TOUS les titres à nouveau sur AlloCiné, même ceux déjà en cache. Plus lent, à utiliser seulement en cas de doute sur des notes existantes.">🔁 Rescan complet</button>
+    <button id="btn-jellyfin-full" onclick="syncJellyfin(true)" style="display:none;" title="Rescan complet DES DEUX systèmes : recherche à nouveau TOUS les titres sur AlloCiné (le cache est ignoré, pas juste complété) ET réécrit TOUS les items Jellyfin correspondants, même ceux qui ont déjà une note à jour. L'opération la plus lente et la plus complète — à utiliser en cas de doute sur des notes existantes.">🔁 Rescan complet (AlloCiné + Jellyfin)</button>
+    <button id="btn-jellyfin-push" onclick="pushCachedNotes()" style="display:none;" title="N'interroge JAMAIS AlloCiné : écrit vers Jellyfin les notes déjà présentes dans le cache de l'application. Les titres sans entrée de cache sont ignorés (ni recherchés, ni modifiés). Quasi instantané, à utiliser par exemple juste après avoir corrigé un problème côté Jellyfin, sans attendre une nouvelle synchro complète.">📤 Appliquer le cache à Jellyfin</button>
   </div>
 </header>
 
@@ -347,18 +349,24 @@ async function loadJellyfinStatus() {
     lastJellyfinStatus = s;
     const btn = document.getElementById('btn-jellyfin');
     const btnFull = document.getElementById('btn-jellyfin-full');
+    const btnPush = document.getElementById('btn-jellyfin-push');
     btn.style.display = 'inline-flex';
     btnFull.style.display = 'inline-flex';
+    btnPush.style.display = 'inline-flex';
     if (s.en_cours) {
       btn.disabled = true;
       btnFull.disabled = true;
+      btnPush.disabled = true;
       btn.textContent = `🔄 Synchro en cours ${s.nb_traites}/${s.nb_items_bibliotheque}…`;
-      btnFull.textContent = '🔁 Rescan complet';
+      btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
+      btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
     } else {
       btn.disabled = false;
       btnFull.disabled = false;
+      btnPush.disabled = false;
       btn.textContent = '🔄 Synchroniser Jellyfin';
-      btnFull.textContent = '🔁 Rescan complet';
+      btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
+      btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
     }
     const span = document.getElementById('jf-status');
     if (span) span.innerHTML = jellyfinStatusHtml(s);
@@ -398,16 +406,19 @@ async function refresh() {
 async function syncJellyfin(forceRefresh) {
   if (forceRefresh) {
     const ok = confirm(
-      "Rescan complet : chaque titre de la bibliothèque sera recherché à nouveau sur AlloCiné, " +
-      "même ceux déjà en cache. Nettement plus lent qu'une synchro normale (les titres déjà " +
-      "trouvés sont normalement servis depuis le cache). Continuer ?"
+      "Rescan complet DES DEUX systèmes : chaque titre de la bibliothèque sera recherché à nouveau " +
+      "sur AlloCiné (le cache est ignoré, pas juste complété), ET chaque item Jellyfin correspondant " +
+      "sera réécrit, même ceux qui ont déjà une note à jour. C'est l'opération la plus lente et la " +
+      "plus complète. Continuer ?"
     );
     if (!ok) return;
   }
   const btn = document.getElementById('btn-jellyfin');
   const btnFull = document.getElementById('btn-jellyfin-full');
+  const btnPush = document.getElementById('btn-jellyfin-push');
   btn.disabled = true;
   btnFull.disabled = true;
+  btnPush.disabled = true;
   (forceRefresh ? btnFull : btn).textContent = forceRefresh ? '🔁 Démarrage du rescan…' : '🔄 Démarrage…';
   try {
     // L'API répond immédiatement : la synchro tourne en arrière-plan.
@@ -418,8 +429,31 @@ async function syncJellyfin(forceRefresh) {
     alert('Échec de la synchronisation Jellyfin : ' + e.message);
     btn.disabled = false;
     btnFull.disabled = false;
+    btnPush.disabled = false;
     btn.textContent = '🔄 Synchroniser Jellyfin';
-    btnFull.textContent = '🔁 Rescan complet';
+    btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
+  }
+}
+
+async function pushCachedNotes() {
+  const btn = document.getElementById('btn-jellyfin');
+  const btnFull = document.getElementById('btn-jellyfin-full');
+  const btnPush = document.getElementById('btn-jellyfin-push');
+  btn.disabled = true;
+  btnFull.disabled = true;
+  btnPush.disabled = true;
+  btnPush.textContent = '📤 Envoi en cours…';
+  try {
+    // N'interroge jamais AlloCiné : quasi instantané, mais reste asynchrone
+    // par cohérence avec les autres opérations (voir GET /jellyfin/statut).
+    await fetchJSON('/jellyfin/push-cached-notes', { method: 'POST' });
+    await pollJellyfin();
+  } catch (e) {
+    alert("Échec de l'application du cache vers Jellyfin : " + e.message);
+    btn.disabled = false;
+    btnFull.disabled = false;
+    btnPush.disabled = false;
+    btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
   }
 }
 
