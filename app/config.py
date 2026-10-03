@@ -97,6 +97,15 @@ JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 # Laissez vide pour utiliser les endpoints génériques (recommandé en premier essai).
 JELLYFIN_USER_ID = os.getenv("JELLYFIN_USER_ID", "")
 
+# Écrire les notes AlloCiné dans les cases NATIVES de Jellyfin : l'étoile (CommunityRating,
+# note communautaire /10) et la tomate (CriticRating, note critique /100).
+# DÉSACTIVÉ par défaut : ces deux cases sont celles des notes communautaires et Rotten
+# Tomatoes ; y mettre des notes AlloCiné (converties) les fausse. Les notes sont alors
+# seulement gardées dans le cache de l'application, et affichées par le badge AlloCiné
+# (icônes journal / personne) injecté dans l'interface web de Jellyfin.
+# Mettre "true" pour retrouver l'ancien comportement (étoile = spectateurs x2, tomate = presse x20).
+JELLYFIN_WRITE_RATINGS = os.getenv("JELLYFIN_WRITE_RATINGS", "false").strip().lower() in ("1", "true", "yes", "oui", "on")
+
 # Éléments de la bibliothèque Jellyfin à ignorer lors de la synchro des notes
 # et du calendrier : les regroupements (ex. "Avengers - Saga", "300 - Saga")
 # ne correspondent à aucune fiche AlloCiné précise. Expression régulière
@@ -113,6 +122,13 @@ POSTER_CACHE_DIR = os.getenv("POSTER_CACHE_DIR", "/app/data/posters")
 # de Jellyfin : l'entrée est alors valable indéfiniment, et remplacée d'elle-même
 # quand l'affiche change côté Jellyfin.
 POSTER_CACHE_TTL_DAYS = _env_float("POSTER_CACHE_TTL_DAYS", 7.0)
+
+# --- Badge AlloCiné dans l'interface web de Jellyfin ---
+# Origine autorisée à lire GET /jellyfin/allocine-notes depuis le navigateur (CORS) :
+# l'adresse par laquelle VOUS ouvrez Jellyfin, ex. "http://192.168.1.10:8096".
+# "*" (défaut) autorise toute origine : acceptable ici (le contenu ne comprend que des
+# notes AlloCiné publiques et des identifiants d'items), mais restreindre est plus propre.
+NOTES_CORS_ORIGIN = os.getenv("NOTES_CORS_ORIGIN", "*").strip() or "*"
 
 def jellyfin_configured() -> bool:
     return bool(JELLYFIN_URL and JELLYFIN_API_KEY)

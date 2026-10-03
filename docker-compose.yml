@@ -20,6 +20,11 @@ services:
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       # - JELLYFIN_USER_ID=                       # optionnel, seulement si nécessaire
       # - 'JELLYFIN_IGNORE_REGEX=\s[-–—]\s*Saga\s*$$'  # défaut ; éléments Jellyfin ignorés ($$ = $ dans compose)
+      # Écrire aussi les notes AlloCiné dans l'étoile/la tomate de Jellyfin ? (défaut : false = Jellyfin non modifié,
+      # les notes sont affichées par le badge AlloCiné)
+      # - JELLYFIN_WRITE_RATINGS=false
+      # Badge AlloCiné dans l'interface Jellyfin : origine autorisée à lire /jellyfin/allocine-notes (défaut : *)
+      # - NOTES_CORS_ORIGIN=http://192.168.1.10:8096
       - TITLE_ALIASES_PATH=/app/data/title_aliases.json
       - TITLE_MATCH_THRESHOLD=0.85
       - CALENDAR_NAME=Pathé Toulouse Wilson (ma bibliothèque Jellyfin)

@@ -380,6 +380,36 @@ def _ecarts(attendu: dict, relu: dict) -> List[str]:
     return out
 
 
+def _post_full_item(item_id: str, full_item: dict) -> Optional[str]:
+    """
+    Renvoie l'item complet à Jellyfin (POST /Items/{id}). Retourne None si Jellyfin a
+    répondu 200/204, sinon un message d'erreur lisible.
+
+    La requête n'est JAMAIS redirigée automatiquement : un client HTTP qui suit une
+    redirection 301/302 transforme un POST en GET et abandonne le corps, ce qui ressemble
+    à un succès (200) sans rien écrire. Une redirection est donc traitée comme un échec
+    explicite, avec l'adresse vers laquelle Jellyfin redirige.
+    """
+    resp = requests.post(
+        f"{JELLYFIN_URL}/Items/{item_id}",
+        headers=_headers(),
+        json=full_item,
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    if resp.status_code in (200, 204):
+        return None
+    if 300 <= resp.status_code < 400:
+        detail = (
+            f"redirection HTTP {resp.status_code} vers {resp.headers.get('Location')!r} : "
+            "l'écriture n'a PAS été effectuée. Mettez l'URL finale (ex. https://…) dans JELLYFIN_URL."
+        )
+    else:
+        detail = f"HTTP {resp.status_code}: {resp.text[:300]}"
+    logger.error("Échec mise à jour Jellyfin pour l'item %s (%s)", item_id, detail)
+    return detail
+
+
 def update_item_ratings(
     item_id: str,
     community_rating: Optional[float] = None,
@@ -424,23 +454,9 @@ def update_item_ratings(
     # ce que le GET a retourné, pour ne rien perdre d'un verrou existant.
     full_item["LockData"] = True
 
-    resp = requests.post(
-        f"{JELLYFIN_URL}/Items/{item_id}",
-        headers=_headers(),
-        json=full_item,
-        timeout=REQUEST_TIMEOUT,
-        allow_redirects=False,
-    )
-    if resp.status_code not in (200, 204):
-        if 300 <= resp.status_code < 400:
-            detail = (
-                f"redirection HTTP {resp.status_code} vers {resp.headers.get('Location')!r} : "
-                "l'écriture n'a PAS été effectuée. Mettez l'URL finale (ex. https://…) dans JELLYFIN_URL."
-            )
-        else:
-            detail = f"HTTP {resp.status_code}: {resp.text[:300]}"
-        logger.error("Échec mise à jour Jellyfin pour l'item %s (%s)", item_id, detail)
-        return ResultatMiseAJour(False, None, detail)
+    erreur = _post_full_item(item_id, full_item)
+    if erreur:
+        return ResultatMiseAJour(False, None, erreur)
 
     # Relecture : la réponse 2xx ne prouve pas que la valeur est enregistrée.
     try:
@@ -453,6 +469,62 @@ def update_item_ratings(
     ecarts = _ecarts(envoye, relu)
     if ecarts:
         return ResultatMiseAJour(True, False, "Jellyfin a accepté mais ne conserve pas la valeur — " + "; ".join(ecarts))
+    return ResultatMiseAJour(True, True, "")
+
+
+# Les notes écrites par l'application ont UNE décimale : on exige une égalité stricte pour
+# reconnaître nos valeurs. Une tolérance large (0,06) prendrait pour les nôtres des notes
+# TMDb comme 8,222 ; une note Rotten Tomatoes entière égale à la nôtre est, elle, sans risque
+# (la retirer puis la retélécharger donne la même valeur).
+_TOLERANCE_NETTOYAGE = 0.001
+
+
+def clear_item_ratings(item_id: str, attendu: dict) -> ResultatMiseAJour:
+    """
+    Retire d'un item les notes que l'application y avait écrites (étoile et/ou tomate) et
+    le verrou posé en même temps, pour que Jellyfin puisse à nouveau les remplir lui-même.
+
+    :param attendu: {"CommunityRating": x, "CriticRating": y} — UNIQUEMENT les champs à retirer,
+        avec la valeur que l'application y a écrite. Un champ n'est vidé que si sa valeur
+        ACTUELLE est encore celle-là : si quelqu'un (ou Jellyfin) l'a changée depuis, c'est une
+        donnée qui n'est plus la nôtre, elle est laissée intacte. Les champs absents de
+        `attendu` ne sont jamais touchés (ex. une tomate Rotten Tomatoes d'origine).
+
+    Retourne acceptee=False sans rien écrire si l'item est introuvable/ambigu ou si plus aucune
+    valeur ne correspond ; sinon relit l'item pour vérifier que les champs sont bien vides.
+    """
+    if not JELLYFIN_URL or not JELLYFIN_API_KEY:
+        raise JellyfinError("JELLYFIN_URL / JELLYFIN_API_KEY non configurés")
+
+    full_item = _get_full_item(item_id)
+    if full_item is None:
+        return ResultatMiseAJour(False, None, "item introuvable, ou Jellyfin a renvoyé un autre item")
+
+    a_vider = []
+    for champ, valeur in attendu.items():
+        actuelle = full_item.get(champ)
+        if actuelle is not None and abs(float(actuelle) - float(valeur)) <= _TOLERANCE_NETTOYAGE:
+            a_vider.append(champ)
+    if not a_vider:
+        return ResultatMiseAJour(False, None, "aucune valeur ne correspond plus à celle écrite par l'application : item laissé intact")
+
+    for champ in a_vider:
+        full_item[champ] = None
+    full_item["LockData"] = False
+
+    erreur = _post_full_item(item_id, full_item)
+    if erreur:
+        return ResultatMiseAJour(False, None, erreur)
+
+    try:
+        relu = _get_full_item(item_id)
+    except Exception as e:
+        return ResultatMiseAJour(True, None, f"relecture impossible: {e}")
+    if relu is None:
+        return ResultatMiseAJour(True, None, "relecture : item introuvable")
+    restes = [c for c in a_vider if relu.get(c) is not None]
+    if restes:
+        return ResultatMiseAJour(True, False, "Jellyfin a accepté mais n'a pas vidé : " + ", ".join(restes))
     return ResultatMiseAJour(True, True, "")
 
 

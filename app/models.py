@@ -64,4 +64,14 @@ class StatutSyncJellyfin(BaseModel):
     # Jellyfin a répondu "OK" mais, relue juste après, la note n'est PAS enregistrée
     nb_non_persistees: int = 0
     nb_non_trouves: int = 0
+    # Titres pour lesquels une note AlloCiné est connue (cache ou recherche) : c'est le
+    # chiffre qui compte quand l'écriture vers Jellyfin est désactivée (cas par défaut).
+    nb_notes_trouvees: int = 0
+    # JELLYFIN_WRITE_RATINGS : les notes sont-elles écrites dans l'étoile / la tomate ?
+    ecriture_jellyfin: bool = False
+    # Opération en cours ou dernière : "synchro" | "application_cache" | "nettoyage"
+    operation: str = "synchro"
+    # Pour le nettoyage (retrait des notes écrites auparavant dans l'étoile / la tomate)
+    nb_nettoyees: int = 0
+    nb_ignorees: int = 0
     erreurs: List[str] = []

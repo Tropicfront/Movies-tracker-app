@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.models import Film, ItemBibliotheque, NoteAlloCine, StatutScraping, StatutSyncJellyfin
 from app.scrapers.allocine_scraper import get_note_allocine
@@ -24,6 +24,11 @@ from app.storage import (
     get_statut,
     start_jellyfin_notes_sync_async,
     start_apply_cached_notes_to_jellyfin_async,
+    get_allocine_notes_index,
+    ecriture_jellyfin_activee,
+    apercu_nettoyage_notes_jellyfin,
+    start_restore_jellyfin_ratings_async,
+    MSG_ECRITURE_DESACTIVEE,
     get_statut_sync_jellyfin,
     get_jellyfin_library_with_notes,
 )
@@ -31,6 +36,7 @@ from app.calendar_builder import generate_calendar_ics
 from app.config import (
     ALLOCINE_REQUESTS_PER_SECOND,
     ALLOCINE_SYNC_DELAY_SECONDS,
+    NOTES_CORS_ORIGIN,
     jellyfin_configured,
 )
 from fastapi import Response
@@ -236,6 +242,9 @@ def jellyfin_push_cached_notes() -> StatutSyncJellyfin:
     verrou de métadonnées...), sans attendre une nouvelle synchro complète de
     plusieurs minutes pour des titres déjà résolus.
 
+    **Refusé (409) tant que JELLYFIN_WRITE_RATINGS est désactivé** (cas par défaut) : rien n'est
+    alors écrit dans l'étoile ni la tomate de Jellyfin, les notes sont affichées par le badge.
+
     Nécessite JELLYFIN_URL et JELLYFIN_API_KEY configurés. Tourne en
     arrière-plan comme POST /jellyfin/sync-notes, et partage le même verrou :
     si une synchro complète est déjà en cours, cet appel est ignoré (et
@@ -246,7 +255,58 @@ def jellyfin_push_cached_notes() -> StatutSyncJellyfin:
             status_code=400,
             detail="JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés (variables d'environnement).",
         )
+    if not ecriture_jellyfin_activee():
+        raise HTTPException(status_code=409, detail=MSG_ECRITURE_DESACTIVEE)
     return start_apply_cached_notes_to_jellyfin_async()
+
+
+@app.get("/jellyfin/restore-ratings", tags=["Jellyfin"])
+def jellyfin_restore_ratings_apercu() -> dict:
+    """
+    **Aperçu en lecture seule** du nettoyage : combien d'items ont, dans l'étoile et/ou la tomate de
+    Jellyfin, une note identique à celle que cette application y avait écrite (spectateurs x2,
+    presse x20). Ne modifie rien. À consulter avant `POST /jellyfin/restore-ratings`.
+    """
+    if not jellyfin_configured():
+        raise HTTPException(status_code=400, detail="JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés.")
+    try:
+        return apercu_nettoyage_notes_jellyfin()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur Jellyfin: {e}")
+
+
+@app.post("/jellyfin/restore-ratings", response_model=StatutSyncJellyfin, tags=["Jellyfin"])
+def jellyfin_restore_ratings(
+    confirmer: bool = Query(False, description="Doit valoir true : l'opération modifie des items Jellyfin."),
+) -> StatutSyncJellyfin:
+    """
+    **Retire de Jellyfin les notes que cette application y avait écrites** dans l'étoile et la tomate
+    (et le verrou posé en même temps), pour que Jellyfin puisse les remplir à nouveau lui-même.
+
+    - N'agit que sur les champs dont la valeur est **exactement** celle écrite par l'application,
+      revérifiée juste avant chaque retrait ; le reste n'est jamais touché.
+    - Les valeurs d'origine de Jellyfin, écrasées à l'époque, n'avaient pas été sauvegardées : elles
+      ne sont **pas restaurées** par cet appel. Après lui, lancez dans Jellyfin « Actualiser les
+      métadonnées » → « Rechercher les métadonnées manquantes » pour les redemander aux fournisseurs.
+    - Refusé (409) si JELLYFIN_WRITE_RATINGS est activé.
+    - Tourne en arrière-plan : suivre `GET /jellyfin/statut` (`operation` = "nettoyage").
+
+    Consultez d'abord `GET /jellyfin/restore-ratings` (aperçu sans modification).
+    """
+    if not jellyfin_configured():
+        raise HTTPException(status_code=400, detail="JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés.")
+    if ecriture_jellyfin_activee():
+        raise HTTPException(
+            status_code=409,
+            detail="JELLYFIN_WRITE_RATINGS est activé : la synchro réécrirait ces notes. Désactivez-le d'abord.",
+        )
+    if not confirmer:
+        raise HTTPException(
+            status_code=400,
+            detail="Opération non confirmée. Consultez GET /jellyfin/restore-ratings (aperçu), puis "
+                   "relancez avec ?confirmer=true.",
+        )
+    return start_restore_jellyfin_ratings_async()
 
 
 @app.delete("/allocine/cache", tags=["AlloCiné"])
@@ -374,6 +434,43 @@ def jellyfin_image_cache_clear() -> dict:
 def jellyfin_image_cache_stats() -> dict:
     """Nombre d'affiches en cache et espace disque utilisé."""
     return {"actif": image_cache.enabled(), **image_cache.stats()}
+
+
+def _cors_headers() -> dict:
+    h = {"Access-Control-Allow-Origin": NOTES_CORS_ORIGIN, "Cache-Control": "no-store"}
+    if NOTES_CORS_ORIGIN != "*":
+        h["Vary"] = "Origin"
+    return h
+
+
+@app.get("/jellyfin/allocine-notes", tags=["Jellyfin"])
+def jellyfin_allocine_notes(
+    refresh: bool = Query(False, description="Reconstruit l'index maintenant (sinon gardé 5 min)"),
+) -> JSONResponse:
+    """
+    Notes AlloCiné (cache) de chaque film/série Jellyfin, indexées par identifiant
+    d'item. Lu par le script `jellyfin-allocine.js` pour afficher un badge AlloCiné
+    à côté de l'étoile et de la tomate dans l'interface web de Jellyfin.
+
+    Répond avec les en-têtes CORS (voir NOTES_CORS_ORIGIN) pour que la page Jellyfin,
+    qui est une autre origine, puisse lire la réponse — y compris en cas d'erreur,
+    sinon le navigateur n'afficherait qu'une erreur CORS opaque à la place du vrai
+    message. Aucune requête vers AlloCiné.
+    """
+    if not jellyfin_configured():
+        return JSONResponse(
+            {"detail": "JELLYFIN_URL et JELLYFIN_API_KEY doivent être configurés."},
+            status_code=400, headers=_cors_headers(),
+        )
+    try:
+        index = get_allocine_notes_index(force=refresh)
+    except Exception as e:
+        return JSONResponse({"detail": f"Erreur Jellyfin: {e}"}, status_code=502, headers=_cors_headers())
+    from datetime import datetime, timezone
+    return JSONResponse(
+        {"genere_le": datetime.now(timezone.utc).isoformat(), "nb": len(index), "items": index},
+        headers=_cors_headers(),
+    )
 
 
 @app.get("/calendar.ics", tags=["Calendrier"])

@@ -6,7 +6,7 @@ Application Docker qui suit les films à l'affiche au **Pathé Toulouse Wilson**
 
 - **Films à l'affiche** : titre, affiche, genres, synopsis, séances du jour (VF/VOST, horaires), notes AlloCiné (presse et spectateurs) — récupérés en une seule requête vers la page salle AlloCiné du cinéma.
 - **Page web** (`/`) : tout ce qui précède, présenté en cartes avec affiches, avec des boutons pour rafraîchir les données ou lancer la synchro Jellyfin.
-- **Synchro Jellyfin** : injecte la note AlloCiné de chaque film/série de votre bibliothèque dans `CommunityRating` (spectateurs) et `CriticRating` (presse) — visible directement dans les clients Jellyfin, comme des notes IMDb/Rotten Tomatoes.
+- **Notes AlloCiné pour votre bibliothèque Jellyfin** : chaque film/série est recherché sur AlloCiné, ses notes sont gardées en cache et affichées sur sa page de détail Jellyfin par un badge à part (icône **journal** = presse, icône **personne** = spectateurs, par exemple `4.5/5`), à côté de l'étoile et de la tomate de Jellyfin, qui ne sont **pas touchées**. Option, désactivée par défaut : écrire aussi ces notes dans l'étoile et la tomate (`JELLYFIN_WRITE_RATINGS`).
 - **Calendrier iCal** (`/calendar.ics`) : les films à l'affiche dont le titre correspond à un titre déjà présent dans votre bibliothèque Jellyfin, intégrable dans Homepage ou Homarr.
 - **API REST** complète (voir [Endpoints](#endpoints)), documentée automatiquement sur `/docs`.
 
@@ -61,8 +61,11 @@ Après **chaque mise à jour du code**, reconstruisez l'image puis recréez le c
 | GET | `/allocine/note?titre=...&type=film\|serie[&annee=...][&force_refresh=true]` | Note AlloCiné pour n'importe quel titre |
 | DELETE | `/allocine/cache` | Vide le cache des résultats AlloCiné |
 | POST | `/jellyfin/sync-notes[?force_refresh=true]` | Relance la synchro (rescan complet AlloCiné + Jellyfin si `force_refresh=true`) |
+| GET | `/jellyfin/restore-ratings` | Aperçu (lecture seule) : combien d'items ont dans ★/🍅 une note écrite auparavant par l'application |
+| POST | `/jellyfin/restore-ratings?confirmer=true` | Retire ces notes (et le verrou) d'★/🍅 pour que Jellyfin puisse remettre les siennes |
 | POST | `/jellyfin/push-cached-notes` | Écrit vers Jellyfin les notes déjà en cache, sans aucune requête AlloCiné |
 | GET | `/jellyfin/statut` | Statut de la dernière synchro Jellyfin |
+| GET | `/jellyfin/allocine-notes` | Notes AlloCiné (cache) par identifiant d'item Jellyfin, lues par le badge (CORS activé) |
 | GET | `/jellyfin/library` | Films/séries Jellyfin + note AlloCiné en cache (JSON, alimente `/bibliotheque`) |
 | GET | `/jellyfin/image/{id}[?w=400][&tag=…]` | Affiche d'un item Jellyfin (proxy authentifié, redimensionnée, **gardée sur disque**) |
 | GET / DELETE | `/jellyfin/image-cache` | Nombre d'affiches en cache et espace disque / vider ce cache |
@@ -97,10 +100,19 @@ d'authentification — ce client utilise le format strict requis, avec valeurs e
 1. Dans Jellyfin : **Dashboard → Clés API → Ajouter**, copiez la clé.
 2. Renseignez `JELLYFIN_URL` (ex: `http://192.168.1.10:8096`) et `JELLYFIN_API_KEY` dans `.env`.
 3. Au démarrage du conteneur (ou via `POST /jellyfin/sync-notes`), chaque film/série de votre
-   bibliothèque est recherché sur AlloCiné par titre, et :
-   - la **note spectateurs** (/5) est convertie en `CommunityRating` (/10, ×2),
-   - la **note presse** (/5) est convertie en `CriticRating` (/100, ×20).
-4. Ces champs s'affichent nativement dans les clients Jellyfin (web, apps mobiles/TV).
+   bibliothèque est recherché sur AlloCiné par titre. Les notes (presse et spectateurs, sur 5) sont
+   **gardées dans le cache de l'application** ; **Jellyfin n'est pas modifié**.
+4. Elles s'affichent dans Jellyfin grâce au [badge AlloCiné](#badge-allociné-dans-linterface-web-de-jellyfin).
+
+**Pourquoi ne pas utiliser l'étoile et la tomate ?** Ce sont les cases des notes communautaires et de
+Rotten Tomatoes : y écrire des notes AlloCiné (converties, ×2 et ×20) les fausse et les rend méconnaissables.
+Par défaut, l'application n'y touche donc plus. Pour retrouver l'ancien comportement, définissez
+`JELLYFIN_WRITE_RATINGS=true` : la note **spectateurs** (/5) est alors aussi convertie en `CommunityRating`
+(/10, ×2) et la note **presse** (/5) en `CriticRating` (/100, ×20). Si vous avez utilisé ce mode avant, voir
+[Nettoyer les anciennes notes](#nettoyer-les-anciennes-notes-de-létoile-et-de-la-tomate-une-fois).
+
+> Les parties de ce README qui parlent d'**écrire** dans Jellyfin (relecture après écriture, redirection, « Appliquer le
+> cache à Jellyfin »…) ne concernent que `JELLYFIN_WRITE_RATINGS=true`.
 
 La mise à jour récupère toujours l'item Jellyfin complet avant de le renvoyer avec uniquement les
 deux champs de note modifiés (pour éviter un bug connu de Jellyfin où un envoi partiel peut
@@ -233,12 +245,12 @@ Trois façons de forcer une mise à jour, du plus complet au plus rapide :
 
 - Bouton **🔁 Rescan complet (AlloCiné + Jellyfin)** sur le dashboard (ou
   `POST /jellyfin/sync-notes?force_refresh=true`) : recherche TOUS les titres à nouveau sur AlloCiné (le
-  cache est ignoré, pas juste complété) ET réécrit TOUS les items Jellyfin correspondants, même ceux qui
+  cache est ignoré, pas juste complété) ET (seulement si `JELLYFIN_WRITE_RATINGS=true`) réécrit TOUS les items Jellyfin correspondants, même ceux qui
   ont déjà une note à jour. L'opération la plus lente et la plus complète des trois — utile en cas de
   doute sur des notes existantes (ex. après une correction de la logique de correspondance). Une
   confirmation est demandée avant de lancer depuis le dashboard.
-- Bouton **📤 Appliquer le cache à Jellyfin** sur le dashboard (ou `POST /jellyfin/push-cached-notes`) :
-  n'interroge **jamais** AlloCiné. Écrit vers Jellyfin les notes déjà présentes dans le cache ; les
+- Bouton **📤 Appliquer le cache à Jellyfin** (affiché seulement si `JELLYFIN_WRITE_RATINGS=true` ; sinon `POST /jellyfin/push-cached-notes`
+  répond 409) : n'interroge **jamais** AlloCiné. Écrit vers Jellyfin les notes déjà présentes dans le cache ; les
   titres sans entrée de cache sont ignorés (ni recherchés, ni modifiés). Quasi instantané. Utile par
   exemple juste après avoir corrigé un problème côté Jellyfin (comme le bug de verrouillage plus bas) :
   les notes déjà connues sont réappliquées sans attendre une nouvelle synchro complète.
@@ -273,6 +285,8 @@ API. Le compte annoncé par Jellyfin est **indicatif** : il peut différer de ce
 
 ### Les logs disent « mis à jour » mais rien n'apparaît dans Jellyfin
 
+*(Ne concerne que `JELLYFIN_WRITE_RATINGS=true`.)*
+
 Une réponse HTTP positive ne prouve pas que la note est enregistrée. Après chaque écriture, l'application
 **relit l'item** et compare. Trois cas, chacun avec son message :
 
@@ -299,6 +313,85 @@ données : une affiche déjà vue n'entraîne **aucune requête** vers Jellyfin,
 inclut le `tag` d'image de Jellyfin, qui change quand l'affiche change : l'entrée se renouvelle d'elle-même et
 l'ancienne version est supprimée. La largeur demandée est arrondie à un palier (200, 300, 400, 600, 800, 1000 px)
 pour que l'espace disque reste borné. `GET /jellyfin/image-cache` donne le nombre de fichiers et la taille.
+
+## Badge AlloCiné dans l'interface web de Jellyfin
+
+Un petit script ajoute, dans la ligne d'informations de la page de détail d'un film ou d'une série, deux notes
+AlloCiné **sur 5**, chacune avec son icône. L'étoile ★ et la tomate 🍅 de Jellyfin (notes communautaires / Rotten
+Tomatoes) ne sont ni modifiées ni masquées :
+
+```
+1968   2h 29m   [FR-TP]   ★ 8.2   🍅 92   [journal] 4.6/5   [personne] 4.1/5   Se terminera à 23:46
+```
+
+- **icône journal** : note de la **presse** ; **icône personne** : note des **spectateurs**.
+- Le badge renvoie vers la fiche AlloCiné et n'apparaît que pour les titres qui ont une note en cache (lancez une synchro).
+- Il lit ses données dans l'application (`GET /jellyfin/allocine-notes`) et **n'écrit rien dans Jellyfin**.
+
+### Installation
+
+1. Dans Jellyfin : **Tableau de bord → Plugins → Dépôts** (Repositories) → ajoutez
+   `https://raw.githubusercontent.com/n00bcodr/jellyfin-plugins/main/12/manifest.json`, c'est le manifeste que les notes
+   de version du plugin indiquent pour Jellyfin 12. Puis **Catalogue** → installez **JavaScript Injector**
+   ([n00bcodr/Jellyfin-JavaScript-Injector](https://github.com/n00bcodr/Jellyfin-JavaScript-Injector)) et redémarrez Jellyfin.
+   - **Vérifiez la version proposée.** La 4.0.0.0 est celle annoncée pour Jellyfin 12 (« Jellyfin v12 Support »). Au moment où je
+     l'ai lu, ce manifeste ne listait pour ce plugin que la 3.5.0.0, ciblée sur Jellyfin 10.11 (`targetAbi 10.11.0.0`). Si le
+     catalogue n'offre que celle-là et que Jellyfin la marque incompatible ou ne l'active pas, téléchargez la 4.0.0.0 sur
+     [la page de la version](https://github.com/n00bcodr/Jellyfin-JavaScript-Injector/releases/tag/4.0.0.0) et installez-la à
+     la main, ou utilisez la méthode `index.html` plus bas.
+   - Recommandé : le plugin **File Transformation**, qui permet de servir le script sans modifier `index.html` (évite les
+     problèmes de droits d'écriture, fréquents avec Docker).
+2. **Tableau de bord → JS Injector** : ajoutez un script avec ces lignes, en remplaçant l'adresse par celle de
+   **cette application, telle que votre navigateur la voit** (pas `localhost`) :
+
+   ```js
+   window.ALLOCINE_API_BASE = 'http://192.168.1.27:8095';
+   var s = document.createElement('script');
+   s.src = window.ALLOCINE_API_BASE + '/static/jellyfin-allocine.js';
+   document.head.appendChild(s);
+   ```
+3. Enregistrez, puis rechargez la page Jellyfin en **vidant le cache** (Ctrl+F5). Ouvrez la fiche d'un film noté.
+
+**Sans plugin** : ajoutez `<script src="http://192.168.1.27:8095/static/jellyfin-allocine.js"></script>` avant `</body>` dans le
+`index.html` de l'interface web de Jellyfin, par exemple en copiant ce fichier hors du conteneur, en le modifiant, puis en le
+montant à la place de l'original (vérifiez d'abord son emplacement avec `docker exec jellyfin ls /jellyfin`).
+
+### Nettoyer les anciennes notes de l'étoile et de la tomate (une fois)
+
+Si l'application a déjà écrit des notes AlloCiné dans ★ et 🍅 (c'était son comportement avant cette version), elles y sont
+toujours, et les fiches concernées sont **verrouillées** (`LockData`), ce qui empêche Jellyfin de les rafraîchir.
+
+1. Sur le tableau de bord de l'application : **🧹 Nettoyer ★/🍅**. Un aperçu s'affiche, puis une confirmation est demandée.
+   (Équivalent API : `GET /jellyfin/restore-ratings` pour l'aperçu, puis `POST /jellyfin/restore-ratings?confirmer=true`.)
+2. L'opération ne touche **que** les champs dont la valeur est exactement celle écrite par l'application (revérifiée juste avant
+   chaque retrait), et retire le verrou. Une note d'un autre fournisseur, ou modifiée depuis, est laissée intacte.
+3. **Limite importante** : les valeurs d'origine de Jellyfin (TMDb, Rotten Tomatoes) avaient été écrasées **sans sauvegarde**.
+   Elles ne sont donc **pas restaurées** par ce nettoyage. Dans Jellyfin, lancez ensuite sur vos bibliothèques
+   **Actualiser les métadonnées → Rechercher les métadonnées manquantes** (*Search for missing metadata*) pour les redemander aux
+   fournisseurs. Je n'ai pas pu vérifier sur un vrai serveur que cela remplit la note communautaire ; la note critique (tomate)
+   dépend de la présence d'un fournisseur qui la fournit (OMDb) dans votre Jellyfin.
+
+Le nettoyage est refusé tant que `JELLYFIN_WRITE_RATINGS=true` (la synchro réécrirait aussitôt ces notes).
+
+### Si rien n'apparaît
+
+Le script ne fait **rien** plutôt que de risquer de casser la page. Ouvrez la console du navigateur (F12) : une ligne
+`[AlloCiné] badge actif — notes lues depuis …` confirme qu'il est chargé ; sinon un avertissement `[AlloCiné] notes
+indisponibles (…)` donne la cause :
+
+- **Contenu mixte** : Jellyfin est ouvert en `https://` mais l'application répond en `http://`. Le navigateur bloque. Mettez
+  les deux sous le même schéma (par exemple l'application derrière le même proxy en https).
+- **Politique de sécurité (CSP) du proxy** : le modèle nginx de la documentation Jellyfin impose `connect-src 'self'`,
+  ce qui interdit à la page d'appeler une autre adresse. Jellyfin lui-même n'envoie pas de CSP par défaut ; elle vient
+  du proxy. Il faut y autoriser l'adresse de l'application (`connect-src` et `script-src`).
+- **CORS** : définissez `NOTES_CORS_ORIGIN` sur l'adresse par laquelle vous ouvrez Jellyfin (ou laissez `*`).
+- **Aucun badge sur un film précis** : il n'a pas de note AlloCiné en cache (page `/bibliotheque`, filtre « Sans note »).
+
+**Limites.** Cela ne fonctionne que dans les clients qui affichent l'interface web de Jellyfin (navigateurs, Jellyfin Media
+Player, et les applications qui l'embarquent), pas dans les applications natives. Les sélecteurs de la page de détail
+(`.itemMiscInfo-primary`, `.starRatingContainer`, `.mediaInfoCriticRating`) ont été relevés sur un projet testé avec
+Jellyfin 10.11.1, et la mise en page de vos captures sous Jellyfin 12.1 est identique, mais je n'ai pas pu vérifier les noms
+de classes sur 12.1 : s'ils ont changé, le badge ne s'affiche pas, sans autre conséquence.
 
 ## Les notes n'apparaissent pas dans Jellyfin malgré des logs "mis à jour"
 
@@ -372,6 +465,8 @@ Si `/films` renvoie une liste vide ou incomplète :
 | `ALLOCINE_CACHE_PATH` | `/app/data/allocine_cache.json` | Fichier de cache des résultats AlloCiné (recherche + note par titre) |
 | `ALLOCINE_CACHE_TTL_DAYS` | `30` | Durée de validité d'une entrée du cache, en jours. `<= 0` désactive le cache |
 | `JELLYFIN_IGNORE_REGEX` | `\s[-–—]\s*Saga\s*$` | Éléments Jellyfin ignorés (regex, insensible à la casse, appliquée au nom). Par défaut les regroupements « … - Saga » ; les collections (BoxSet) sont toujours exclues. Vide = désactivé |
+| `JELLYFIN_WRITE_RATINGS` | `false` | `true` = écrit aussi les notes AlloCiné dans l'étoile (`CommunityRating`, spectateurs ×2) et la tomate (`CriticRating`, presse ×20) de Jellyfin. Par défaut, Jellyfin n'est **pas** modifié |
+| `NOTES_CORS_ORIGIN` | `*` | Origine autorisée à lire `/jellyfin/allocine-notes` depuis le navigateur (badge AlloCiné dans Jellyfin). Idéalement l'adresse par laquelle vous ouvrez Jellyfin, ex. `http://192.168.1.10:8096` |
 | `POSTER_CACHE_DIR` | `/app/data/posters` | Dossier du cache disque des affiches Jellyfin (dans le volume de données). Vide = cache désactivé |
 | `POSTER_CACHE_TTL_DAYS` | `7` | Durée de validité (jours) d'une affiche demandée **sans** `tag`. La page `/bibliotheque` envoie le `tag` de Jellyfin : l'entrée est alors valable indéfiniment et se renouvelle d'elle-même si l'affiche change |
 | `CALENDAR_NAME` | `Pathé Toulouse Wilson (dans ma bibliothèque Jellyfin)` | Nom affiché du calendrier (X-WR-CALNAME) |

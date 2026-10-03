@@ -167,6 +167,50 @@ def _card_years(el, candidate_ids: set) -> list[int]:
     return sorted(set(years))
 
 
+def _classer_candidats(pool: list, titre: str, annee: Optional[int]) -> list:
+    """
+    Classe les résultats de recherche, du plus au moins plausible, et retourne
+    [(rang, candidat), ...] (tri stable : à rang égal, l'ordre d'AlloCiné est gardé).
+
+    Un candidat = (chemin, titre affiché, années lues sur la carte). Deux critères :
+    - le TITRE est « identique » (similarité >= 0,9 après normalisation) ou non ;
+    - l'ANNÉE concorde (une année de la carte à ±1 de `annee`), est inconnue (carte
+      sans année lisible, ou aucune année demandée), ou diffère.
+
+    Rangs (0 = meilleur) :
+      0  titre identique, année concorde
+      1  titre identique, année inconnue
+      2  titre différent, année concorde
+      3  titre identique, année DIFFÉRENTE
+      4  titre différent, année inconnue
+      5  titre différent, année différente
+
+    Pourquoi un classement plutôt qu'un filtre : les années lues sur les cartes
+    sont des dates de SORTIE EN FRANCE (et de ressortie), pas l'année de
+    production. « Akira » (1988) est sorti en France en 1991 et ressorti en 2026 :
+    écarter tout candidat dont l'année diffère éliminait le vrai film et ne
+    laissait que « Akira (Live Action) ». Un titre identique à année différente
+    (rang 3) reste donc préférable à un titre approximatif sans année (rang 4),
+    mais moins bon qu'un titre différent dont l'année concorde (rang 2) : c'est ce
+    qui départage « Dune » (1984) de « Dune : Première partie » (2021) pour 2021,
+    et les deux « Apocalypse Now » (1979 / 1998).
+    """
+    wanted = normalize_title(titre)
+
+    def rang(c) -> int:
+        exact = SequenceMatcher(None, wanted, normalize_title(c[1])).ratio() >= 0.9
+        if annee and c[2]:
+            etat = "concorde" if any(abs(y - annee) <= 1 for y in c[2]) else "differe"
+        else:
+            etat = "inconnue"
+        return {
+            (True, "concorde"): 0, (True, "inconnue"): 1, (False, "concorde"): 2,
+            (True, "differe"): 3, (False, "inconnue"): 4, (False, "differe"): 5,
+        }[(exact, etat)]
+
+    return sorted(((rang(c), c) for c in pool), key=lambda rc: rc[0])
+
+
 def _find_fiche_url(titre: str, type_: str = "film", annee: Optional[int] = None) -> Optional[str]:
     """
     Recherche le titre sur AlloCiné et retourne l'URL de la fiche la plus
@@ -181,14 +225,13 @@ def _find_fiche_url(titre: str, type_: str = "film", annee: Optional[int] = None
       donneraient de fausses correspondances si aucun vrai résultat n'existe.
     - Le type demandé (film/série) est prioritaire.
     - Homonymes : plusieurs films portent souvent le même titre (ex. "Apocalypse
-      Now" 1979 de Coppola et un film de 1998). Si `annee` (année de production
-      dans Jellyfin) est fournie, on écarte les résultats dont l'année affichée
-      est connue et éloignée de plus d'1 an. Un résultat dont l'année est
-      illisible n'est JAMAIS écarté (les cartes d'animes, notamment, n'en ont
-      souvent pas) ; si tous seraient écartés, l'année est ignorée.
-    - Parmi les candidats restants, on garde le premier résultat (le classement
-      AlloCiné est généralement bon, y compris quand le titre Jellyfin est en
-      anglais), sauf si un autre candidat a un titre quasi identique.
+      Now" 1979 de Coppola et un film de 1998). Les candidats sont CLASSÉS, pas
+      filtrés, selon le titre (identique ou non) et l'année (voir
+      _classer_candidats) : l'année de Jellyfin départage les homonymes, mais un
+      titre identique n'est jamais éliminé à cause d'une année différente, car
+      les années des cartes AlloCiné sont des dates de sortie en France.
+    - À rang égal, on garde le premier résultat (le classement AlloCiné est
+      généralement bon, y compris quand le titre Jellyfin est en anglais).
     """
     html = _fetch_html(ALLOCINE_SEARCH_URL, params={"q": titre}, debug_name=f"recherche_{titre}")
     _save_debug_html(html, f"recherche_{titre}")
@@ -222,24 +265,17 @@ def _find_fiche_url(titre: str, type_: str = "film", annee: Optional[int] = None
     same_type = [c for c in candidates if path_prefix in c[0]]
     pool = same_type or candidates  # repli : n'importe quel type de fiche
 
+    classes = _classer_candidats(pool, titre, annee)  # [(rang, candidat)] du meilleur au moins bon
+    rang, chosen = classes[0]
+
     year_note = ""
-    if annee:
-        def mismatch(c) -> bool:  # année connue ET différente : c'est un homonyme
-            return bool(c[2]) and not any(abs(y - annee) <= 1 for y in c[2])
-
-        kept = [c for c in pool if not mismatch(c)]
-        if not kept:
-            year_note = " [aucun résultat de cette année : année ignorée]"
-        elif len(kept) < len(pool):
-            pool = kept
-            year_note = " [homonymes d'une autre année écartés]"
-
-    wanted = normalize_title(titre)
-    chosen = pool[0]
-    for cand in pool:
-        if SequenceMatcher(None, wanted, normalize_title(cand[1])).ratio() >= 0.9:
-            chosen = cand
-            break
+    if annee and rang in (0, 2) and any(r in (3, 5) for r, _ in classes):
+        year_note = " [homonymes d'une autre année écartés]"
+    elif rang == 3:
+        year_note = (
+            f" [titre identique mais année AlloCiné différente ({', '.join(map(str, chosen[2]))} ≠ {annee}) : "
+            "retenu — AlloCiné affiche des dates de sortie en France, pas l'année de production]"
+        )
 
     logger.info(
         "Recherche %r%s -> %r %s parmi %d candidat(s)%s",

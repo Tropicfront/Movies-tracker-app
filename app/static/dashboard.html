@@ -211,9 +211,10 @@
     <button id="btn-refresh" onclick="refresh()">↻ Rafraîchir les films</button>
     <a class="btn" href="/calendar.ics">📅 Flux calendrier (.ics)</a>
     <a class="btn" href="/docs">🔧 Documentation API</a>
-    <button id="btn-jellyfin" onclick="syncJellyfin()" style="display:none;">🔄 Synchroniser Jellyfin</button>
+    <button id="btn-jellyfin" onclick="syncJellyfin()" style="display:none;">🔄 Synchroniser les notes AlloCiné</button>
     <button id="btn-jellyfin-full" onclick="syncJellyfin(true)" style="display:none;" title="Rescan complet DES DEUX systèmes : recherche à nouveau TOUS les titres sur AlloCiné (le cache est ignoré, pas juste complété) ET réécrit TOUS les items Jellyfin correspondants, même ceux qui ont déjà une note à jour. L'opération la plus lente et la plus complète — à utiliser en cas de doute sur des notes existantes.">🔁 Rescan complet (AlloCiné + Jellyfin)</button>
     <button id="btn-jellyfin-push" onclick="pushCachedNotes()" style="display:none;" title="N'interroge JAMAIS AlloCiné : écrit vers Jellyfin les notes déjà présentes dans le cache de l'application. Les titres sans entrée de cache sont ignorés (ni recherchés, ni modifiés). Quasi instantané, à utiliser par exemple juste après avoir corrigé un problème côté Jellyfin, sans attendre une nouvelle synchro complète.">📤 Appliquer le cache à Jellyfin</button>
+    <button id="btn-jellyfin-clean" onclick="cleanJellyfin()" style="display:none;" title="Retire de l'étoile et de la tomate de Jellyfin les notes que cette application y avait écrites auparavant (celles-ci sont réservées aux notes communautaires / Rotten Tomatoes). Un aperçu et une confirmation sont demandés avant toute modification.">🧹 Nettoyer ★/🍅</button>
   </div>
 </header>
 
@@ -332,45 +333,77 @@ async function loadStatus() {
 
 let lastJellyfinStatus = null;
 
+// Libellés selon le mode. Par défaut les notes AlloCiné restent dans le cache de l'application et
+// Jellyfin n'est PAS modifié (son étoile et sa tomate sont celles des notes communautaires /
+// Rotten Tomatoes) ; avec JELLYFIN_WRITE_RATINGS=true elles y sont aussi écrites.
+function jfLabels(s) {
+  const ecrit = !!(s && s.ecriture_jellyfin);
+  return {
+    ecrit,
+    sync: ecrit ? '🔄 Synchroniser Jellyfin' : '🔄 Synchroniser les notes AlloCiné',
+    full: ecrit ? '🔁 Rescan complet (AlloCiné + Jellyfin)' : '🔁 Rescan complet (AlloCiné)',
+    fullTitle: ecrit
+      ? "Rescan complet DES DEUX systèmes : recherche à nouveau TOUS les titres sur AlloCiné (le cache est ignoré, pas juste complété) ET réécrit TOUS les items Jellyfin correspondants, même ceux qui ont déjà une note à jour. L'opération la plus lente et la plus complète."
+      : "Recherche à nouveau TOUS les titres sur AlloCiné (le cache est ignoré, pas juste complété). Jellyfin n'est pas modifié. L'opération la plus lente — à utiliser en cas de doute sur des notes existantes.",
+    push: '📤 Appliquer le cache à Jellyfin',
+    clean: '🧹 Nettoyer ★/🍅',
+  };
+}
+
 function jellyfinStatusHtml(s) {
   if (!s) return '';
+  const nom = s.operation === 'nettoyage' ? 'nettoyage'
+    : (s.ecriture_jellyfin ? 'synchronisation' : 'recherche des notes AlloCiné');
   if (s.en_cours) {
-    return ` · Jellyfin : <b>synchronisation en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
+    return ` · Jellyfin : <b>${nom} en cours (${s.nb_traites}/${s.nb_items_bibliotheque})</b>`;
   }
-  if (s.derniere_sync) {
-    const refusees = s.nb_non_persistees
-      ? ` · <span class="err">⚠ ${s.nb_non_persistees} note(s) acceptée(s) puis NON conservée(s) par Jellyfin</span>`
-      : '';
-    return ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées et relues (${fmtDate(s.derniere_sync)})${refusees}`;
+  if (!s.derniere_sync) return '';
+  if (s.operation === 'nettoyage') {
+    const err = s.erreurs && s.erreurs.length ? ` · <span class="err">⚠ ${s.erreurs.length} erreur(s)</span>` : '';
+    return ` · Nettoyage Jellyfin : <b>${s.nb_nettoyees}</b> item(s) nettoyé(s) (${fmtDate(s.derniere_sync)})${err}`;
   }
-  return '';
+  if (!s.ecriture_jellyfin) {
+    return ` · Notes AlloCiné : <b>${s.nb_notes_trouvees}/${s.nb_items_bibliotheque}</b> titres de la bibliothèque (${fmtDate(s.derniere_sync)}) — Jellyfin non modifié`;
+  }
+  const refusees = s.nb_non_persistees
+    ? ` · <span class="err">⚠ ${s.nb_non_persistees} note(s) acceptée(s) puis NON conservée(s) par Jellyfin</span>`
+    : '';
+  return ` · Jellyfin : <b>${s.nb_notes_appliquees}/${s.nb_items_bibliotheque}</b> notes appliquées et relues (${fmtDate(s.derniere_sync)})${refusees}`;
+}
+
+function jellyfinButtons() {
+  return {
+    sync: document.getElementById('btn-jellyfin'),
+    full: document.getElementById('btn-jellyfin-full'),
+    push: document.getElementById('btn-jellyfin-push'),
+    clean: document.getElementById('btn-jellyfin-clean'),
+  };
+}
+
+// Remet tous les boutons Jellyfin dans l'état « au repos » (libellés du mode courant).
+function resetJellyfinButtons() {
+  const L = jfLabels(lastJellyfinStatus), b = jellyfinButtons();
+  b.sync.disabled = b.full.disabled = b.push.disabled = b.clean.disabled = false;
+  b.sync.textContent = L.sync; b.full.textContent = L.full; b.push.textContent = L.push; b.clean.textContent = L.clean;
 }
 
 async function loadJellyfinStatus() {
   try {
     const s = await fetchJSON('/jellyfin/statut');
     lastJellyfinStatus = s;
-    const btn = document.getElementById('btn-jellyfin');
-    const btnFull = document.getElementById('btn-jellyfin-full');
-    const btnPush = document.getElementById('btn-jellyfin-push');
-    btn.style.display = 'inline-flex';
-    btnFull.style.display = 'inline-flex';
-    btnPush.style.display = 'inline-flex';
-    if (s.en_cours) {
-      btn.disabled = true;
-      btnFull.disabled = true;
-      btnPush.disabled = true;
-      btn.textContent = `🔄 Synchro en cours ${s.nb_traites}/${s.nb_items_bibliotheque}…`;
-      btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
-      btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
-    } else {
-      btn.disabled = false;
-      btnFull.disabled = false;
-      btnPush.disabled = false;
-      btn.textContent = '🔄 Synchroniser Jellyfin';
-      btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
-      btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
-    }
+    const L = jfLabels(s), b = jellyfinButtons();
+    b.sync.style.display = 'inline-flex';
+    b.full.style.display = 'inline-flex';
+    b.push.style.display = L.ecrit ? 'inline-flex' : 'none';   // sans écriture vers Jellyfin, rien à « appliquer »
+    b.clean.style.display = L.ecrit ? 'none' : 'inline-flex';  // le nettoyage n'a de sens que sans écriture
+    b.full.title = L.fullTitle;
+    const progress = `${s.nb_traites}/${s.nb_items_bibliotheque}`;
+    const nettoyage = s.operation === 'nettoyage';
+    b.sync.disabled = b.full.disabled = b.push.disabled = b.clean.disabled = !!s.en_cours;
+    b.sync.textContent = s.en_cours && !nettoyage ? `🔄 En cours ${progress}…` : L.sync;
+    b.full.textContent = L.full;
+    b.push.textContent = L.push;
+    b.clean.textContent = s.en_cours && nettoyage ? `🧹 Nettoyage ${progress}…` : L.clean;
     const span = document.getElementById('jf-status');
     if (span) span.innerHTML = jellyfinStatusHtml(s);
     return s;
@@ -407,45 +440,35 @@ async function refresh() {
 }
 
 async function syncJellyfin(forceRefresh) {
+  const L = jfLabels(lastJellyfinStatus), bt = jellyfinButtons();
   if (forceRefresh) {
-    const ok = confirm(
-      "Rescan complet DES DEUX systèmes : chaque titre de la bibliothèque sera recherché à nouveau " +
-      "sur AlloCiné (le cache est ignoré, pas juste complété), ET chaque item Jellyfin correspondant " +
-      "sera réécrit, même ceux qui ont déjà une note à jour. C'est l'opération la plus lente et la " +
-      "plus complète. Continuer ?"
-    );
+    const ok = confirm(L.ecrit
+      ? "Rescan complet DES DEUX systèmes : chaque titre de la bibliothèque sera recherché à nouveau " +
+        "sur AlloCiné (le cache est ignoré, pas juste complété), ET chaque item Jellyfin correspondant " +
+        "sera réécrit, même ceux qui ont déjà une note à jour. C'est l'opération la plus lente et la " +
+        "plus complète. Continuer ?"
+      : "Rescan complet : chaque titre de la bibliothèque sera recherché à nouveau sur AlloCiné " +
+        "(le cache est ignoré, pas juste complété). Jellyfin n'est pas modifié. C'est l'opération la " +
+        "plus lente (plusieurs dizaines de minutes). Continuer ?");
     if (!ok) return;
   }
-  const btn = document.getElementById('btn-jellyfin');
-  const btnFull = document.getElementById('btn-jellyfin-full');
-  const btnPush = document.getElementById('btn-jellyfin-push');
-  btn.disabled = true;
-  btnFull.disabled = true;
-  btnPush.disabled = true;
-  (forceRefresh ? btnFull : btn).textContent = forceRefresh ? '🔁 Démarrage du rescan…' : '🔄 Démarrage…';
+  bt.sync.disabled = bt.full.disabled = bt.push.disabled = bt.clean.disabled = true;
+  (forceRefresh ? bt.full : bt.sync).textContent = forceRefresh ? '🔁 Démarrage du rescan…' : '🔄 Démarrage…';
   try {
     // L'API répond immédiatement : la synchro tourne en arrière-plan.
     const url = '/jellyfin/sync-notes' + (forceRefresh ? '?force_refresh=true' : '');
     await fetchJSON(url, { method: 'POST' });
     await pollJellyfin();
   } catch (e) {
-    alert('Échec de la synchronisation Jellyfin : ' + e.message);
-    btn.disabled = false;
-    btnFull.disabled = false;
-    btnPush.disabled = false;
-    btn.textContent = '🔄 Synchroniser Jellyfin';
-    btnFull.textContent = '🔁 Rescan complet (AlloCiné + Jellyfin)';
+    alert('Échec de la synchronisation : ' + e.message);
+    resetJellyfinButtons();
   }
 }
 
 async function pushCachedNotes() {
-  const btn = document.getElementById('btn-jellyfin');
-  const btnFull = document.getElementById('btn-jellyfin-full');
-  const btnPush = document.getElementById('btn-jellyfin-push');
-  btn.disabled = true;
-  btnFull.disabled = true;
-  btnPush.disabled = true;
-  btnPush.textContent = '📤 Envoi en cours…';
+  const bt = jellyfinButtons();
+  bt.sync.disabled = bt.full.disabled = bt.push.disabled = bt.clean.disabled = true;
+  bt.push.textContent = '📤 Envoi en cours…';
   try {
     // N'interroge jamais AlloCiné : quasi instantané, mais reste asynchrone
     // par cohérence avec les autres opérations (voir GET /jellyfin/statut).
@@ -453,10 +476,37 @@ async function pushCachedNotes() {
     await pollJellyfin();
   } catch (e) {
     alert("Échec de l'application du cache vers Jellyfin : " + e.message);
-    btn.disabled = false;
-    btnFull.disabled = false;
-    btnPush.disabled = false;
-    btnPush.textContent = '📤 Appliquer le cache à Jellyfin';
+    resetJellyfinButtons();
+  }
+}
+
+// Retire de l'étoile / la tomate de Jellyfin les notes que l'application y avait écrites auparavant.
+// Toujours en deux temps : un aperçu en lecture seule, puis une confirmation explicite.
+async function cleanJellyfin() {
+  const bt = jellyfinButtons();
+  bt.sync.disabled = bt.full.disabled = bt.push.disabled = bt.clean.disabled = true;
+  bt.clean.textContent = '🧹 Analyse…';
+  try {
+    const p = await fetchJSON('/jellyfin/restore-ratings');
+    if (!p.a_nettoyer) {
+      alert("Rien à nettoyer : aucune étoile ni tomate de Jellyfin ne contient de note écrite par cette application.");
+      resetJellyfinButtons();
+      return;
+    }
+    const ok = confirm(
+      `${p.a_nettoyer} film(s)/série(s) ont, dans leur étoile (${p.etoiles}) ou leur tomate (${p.tomates}), ` +
+      "une note écrite autrefois par cette application.\n\n" +
+      "Elles vont être retirées (ainsi que le verrou posé en même temps) pour que Jellyfin puisse remettre " +
+      "ses propres notes. Seules les valeurs identiques aux nôtres sont touchées.\n\n" +
+      "Attention : les valeurs d'origine de Jellyfin n'avaient pas été sauvegardées. Après le nettoyage, lancez " +
+      "dans Jellyfin « Actualiser les métadonnées » puis « Rechercher les métadonnées manquantes ».\n\nContinuer ?"
+    );
+    if (!ok) { resetJellyfinButtons(); return; }
+    await fetchJSON('/jellyfin/restore-ratings?confirmer=true', { method: 'POST' });
+    await pollJellyfin();
+  } catch (e) {
+    alert('Échec du nettoyage : ' + e.message);
+    resetJellyfinButtons();
   }
 }
 
